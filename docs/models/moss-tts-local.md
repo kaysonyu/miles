@@ -6,7 +6,15 @@ The initial recipe is ported from the validated Slime MOSS experiment. It requir
 
 ## Training
 
-Launch each Omni replica on a GPU outside the trainer Ray allocation, using Omni's `examples/configs/moss_tts_local.yaml` and the matching checkpoint/codec paths. Keep the vocoder CUDA graph disabled in the validated configuration. Then run:
+Launch each Omni replica on a GPU outside the trainer Ray allocation, using Omni's `examples/configs/moss_tts_local.yaml` and the matching checkpoint/codec paths. The validated WER recipe explicitly disables **all three** of the following options:
+
+```text
+--tts_engine.engine.disable_radix_cache true
+--tts_engine.engine.disable_cuda_graph true
+--vocoder.factory.cuda_graph false
+```
+
+Do not infer evaluation repeatability from `concurrency=1` or a fixed seed alone. Leaving the two engine options at Omni's enabled defaults changed generated actions in a no-update control; re-establish the baseline after changing these settings. Then run:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/run_moss_tts_local.py \
