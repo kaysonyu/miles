@@ -67,6 +67,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         return export_inkling_lora_hf_named(self.model)
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
+        if getattr(self.args, "policy_family", "text") == "moss_tts_local":
+            from miles.policies.moss_tts_local.serving_weight_adapter import MossTTSLocalServingWeightAdapter
+
+            adapter = MossTTSLocalServingWeightAdapter()
+            for name, param in named_params:
+                yield adapter.convert_parameter(self.args, self.model_name, name, param, self.quantization_config)
+            return
         for name, param in named_params:
             yield list(convert_to_hf(self.args, self.model_name, name, param, self.quantization_config))
 

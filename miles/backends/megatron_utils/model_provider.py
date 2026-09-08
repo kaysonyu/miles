@@ -269,6 +269,19 @@ def get_model_provider_func(
                         kitchen_attention_backend=config.kitchen_attention_backend,
                     )
 
+        if getattr(args, "policy_family", "text") == "moss_tts_local":
+            from miles.policies.moss_tts_local.model import MossTTSLocalMegatronModel
+
+            assert role == "actor", "MOSS only supports the actor role"
+            return MossTTSLocalMegatronModel(
+                config=config,
+                transformer_layer_spec=transformer_layer_spec,
+                args=args,
+                pre_process=pre_process,
+                post_process=post_process,
+                vp_stage=vp_stage,
+            )
+
         build_model_context = nullcontext
         build_model_context_args = {}
         if args.fp8_param_gather:

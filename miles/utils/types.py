@@ -1,11 +1,14 @@
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy
 import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+if TYPE_CHECKING:
+    from miles.policies.moss_tts_local.types import MediaArtifact, MossTTSLocalTrajectoryV2
 
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
@@ -87,6 +90,9 @@ class Sample:
     tokens: list[int] = field(default_factory=list)
     multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
+    # Audio-policy trajectories are independent of the text token fields.
+    structured_trajectory: "MossTTSLocalTrajectoryV2 | None" = None
+    artifacts: list["MediaArtifact"] = field(default_factory=list)
     # response
     response: str = ""
     response_length: int = 0
@@ -208,11 +214,22 @@ class Sample:
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
         value["weight_versions"] = [call.to_dicts() for call in self.weight_versions]
+        if self.structured_trajectory is not None:
+            value["structured_trajectory"] = self.structured_trajectory.to_dict()
+        value["artifacts"] = [asdict(artifact) for artifact in self.artifacts]
         return value
 
     @staticmethod
     def from_dict(data: dict):
         data = dict(data)
+        if data.get("structured_trajectory") is not None:
+            from miles.policies.moss_tts_local.types import MossTTSLocalTrajectoryV2
+
+            data["structured_trajectory"] = MossTTSLocalTrajectoryV2.from_dict(data["structured_trajectory"])
+        if data.get("artifacts"):
+            from miles.policies.moss_tts_local.types import MediaArtifact
+
+            data["artifacts"] = [MediaArtifact(**item) for item in data["artifacts"]]
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
@@ -242,6 +259,11 @@ class Sample:
         return sum(self.loss_mask) if self.loss_mask is not None else self.response_length
 
     def validate(self):
+        if self.structured_trajectory is not None:
+            self.structured_trajectory.validate()
+            for artifact in self.artifacts:
+                artifact.validate()
+            return
         assert self.response_length >= 0, f"response_length must be >= 0, got {self.response_length}"
         assert (
             len(self.tokens) >= self.response_length

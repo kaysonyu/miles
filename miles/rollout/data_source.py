@@ -60,7 +60,11 @@ class RolloutDataSource(DataSource):
             tokenizer = load_tokenizer(
                 args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
             )
-            processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+            processor = (
+                None
+                if getattr(args, "policy_family", "text") == "moss_tts_local"
+                else load_processor(args.hf_checkpoint, trust_remote_code=True)
+            )
 
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:

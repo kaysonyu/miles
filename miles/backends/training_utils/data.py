@@ -46,6 +46,13 @@ def get_rollout_data(
         parallel_state.effective_dp.size,
         witness_info=witness_info,
     )
+    if getattr(args, "policy_family", "text") == "moss_tts_local":
+        from miles.policies.moss_tts_local.workflow import MossTTSLocalTrainingWorkflow
+
+        return (
+            MossTTSLocalTrainingWorkflow().prepare_rollout_data(rollout_data, device=torch.cuda.current_device()),
+            store_get_result,
+        )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
         torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]

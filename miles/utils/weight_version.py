@@ -35,6 +35,9 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"])
         return
 
     for sample in samples:
+        if sample.structured_trajectory is not None:
+            version = sample.structured_trajectory.weight_version
+            assert _NUMERIC_VERSION_PATTERN.fullmatch(str(version)), f"Unpublished MOSS weight version: {version}"
         for span in sample.all_weight_version_spans:
             assert span.version != SGLANG_DEFAULT_WEIGHT_VERSION, (
                 f"sample index={sample.index} tokens [{span.abs_start}, {span.abs_end}) were generated under "

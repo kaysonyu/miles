@@ -2669,6 +2669,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
+        from miles.policies.moss_tts_local.arguments import add_arguments as add_moss_arguments
+
+        parser = add_moss_arguments(parser)
         parser = add_run_uuid_arguments(parser)
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
@@ -2926,6 +2929,9 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    from miles.policies.moss_tts_local.arguments import validate_args as validate_moss_args
+
+    validate_moss_args(args)
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3759,6 +3765,9 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
 
 
 def hf_validate_args(args, hf_config):
+    if getattr(args, "policy_family", "text") == "moss_tts_local":
+        return
+
     def equal(x, y):
         return x == y
 

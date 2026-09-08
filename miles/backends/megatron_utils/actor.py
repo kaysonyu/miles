@@ -500,6 +500,16 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutput:
+        if getattr(self.args, "policy_family", "text") == "moss_tts_local":
+            from miles.policies.base import TrainingContext
+            from miles.policies.moss_tts_local.workflow import MossTTSLocalTrainingWorkflow
+
+            context = TrainingContext(
+                self.args, self.model, self.optimizer, self.opt_param_scheduler, self.weights_backuper, actor=self
+            )
+            MossTTSLocalTrainingWorkflow().train_actor(context, rollout_id, rollout_data, external_data=external_data)
+            self._heartbeat.bump()
+            return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_optimizer_steps = len(num_microbatches)

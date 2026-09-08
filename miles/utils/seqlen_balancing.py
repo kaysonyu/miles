@@ -182,19 +182,21 @@ def first_fit_pack(total_lengths, max_tokens_per_bin):
     return _first_fit(range(len(total_lengths)), total_lengths, max_tokens_per_bin)
 
 
-def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin):
+def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin, max_samples_per_bin=None):
     """First-fit over indices sorted by length descending (FFD); never more bins than first-fit."""
     order = sorted(range(len(total_lengths)), key=lambda i: -total_lengths[i])
-    return _first_fit(order, total_lengths, max_tokens_per_bin)
+    return _first_fit(order, total_lengths, max_tokens_per_bin, max_samples_per_bin=max_samples_per_bin)
 
 
-def _first_fit(order, total_lengths, max_tokens_per_bin) -> list[list[int]]:
+def _first_fit(order, total_lengths, max_tokens_per_bin, max_samples_per_bin=None) -> list[list[int]]:
     bins: list[list[int]] = []
     bin_sums: list[int] = []
     for idx in order:
         length = total_lengths[idx]
         for j in range(len(bins)):
-            if bin_sums[j] + length <= max_tokens_per_bin:
+            if bin_sums[j] + length <= max_tokens_per_bin and (
+                max_samples_per_bin is None or len(bins[j]) < max_samples_per_bin
+            ):
                 bins[j].append(idx)
                 bin_sums[j] += length
                 break

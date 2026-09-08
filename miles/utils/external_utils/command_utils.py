@@ -148,6 +148,7 @@ def fp8_cast_bf16(path_src, path_dst):
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
+    preserve_external_processes: bool = False
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
@@ -182,22 +183,23 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
-    exec_command_cpu(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
+    if not config.preserve_external_processes:
+        exec_command_cpu(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            f"{'' if external_ray else 'ray stop --force; '}"
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # cannot be run in CI, o/w kill the parent script
+            # TODO: do we really need this kill? (or can we instead kill miles)
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "sleep 3; "
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            # "pkill -9 python; "
+            "pkill -9 miles; "
+            "pkill -9 redis; "
+            "true; "
+        )
 
     if not external_ray:
         exec_command_cpu(

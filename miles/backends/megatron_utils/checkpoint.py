@@ -105,6 +105,17 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
 
+    if getattr(args, "custom_pretrained_checkpoint_loader_path", None) and args.pretrained_checkpoint:
+        from miles.policies.moss_tts_local.checkpoint import has_resume_checkpoint, load_pretrained
+
+        if not has_resume_checkpoint(args.load):
+            return load_pretrained(
+                args,
+                ddp_model,
+                optimizer,
+                checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     load_path = args.load
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})

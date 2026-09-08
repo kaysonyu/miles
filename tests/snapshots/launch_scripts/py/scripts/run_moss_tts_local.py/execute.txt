@@ -1,0 +1,106 @@
+### 0
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 1
+  --disable-usage-stats
+
+### 1
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 2
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "TENSORBOARD_DIR": "/root/shared_data/tensorboard", "NCCL_CUMEM_ENABLE": "0", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "MOSS_TTS_WER_ASR_URL": "http://127.0.0.1:8000/v1/chat/completions", "MOSS_TTS_WER_ASR_API_KEY_ENV": "INSPIRE_API_KEY", "MOSS_TTS_WER_ASR_API_KEY_FILE": "/root/reward-secret.env", "MOSS_TTS_WER_ASR_MODEL": "qwen3-asr-1.7b", "MOSS_TTS_WER_ASR_REPEATS": "3", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --swiglu
+  --num-layers 36
+  --hidden-size 2560
+  --ffn-hidden-size 9728
+  --num-attention-heads 32
+  --group-query-attention
+  --num-query-groups 8
+  --use-rotary-position-embeddings
+  --disable-bias-linear
+  --normalization RMSNorm
+  --norm-epsilon 1e-6
+  --rotary-base 1000000
+  --vocab-size 151936
+  --kv-channels 128
+  --qk-layernorm
+  --moss-local-num-attention-heads 32
+  --moss-local-ffn-hidden-size 9728
+  --moss-local-rotary-base 1000000
+  --moss-local-layernorm-epsilon 1e-6
+  --hf-checkpoint /root/models/MOSS-TTS-Local-mossLite-v0.1.1-iter20000-sglang
+  --pretrained-checkpoint /root/models/moss-native
+  --save /root/shared_data/checkpoints
+  --save-interval 32
+  --start-rollout-id 0
+  --policy-family moss_tts_local
+  --rollout-backend sglang_omni
+  --model-name moss_tts_local
+  --sglang-omni-endpoints http://127.0.0.1:18080
+  --prompt-data /root/datasets/moss-wer-train.jsonl
+  --input-key text
+  --label-key text
+  --metadata-key metadata
+  --rollout-shuffle
+  --num-rollout 32
+  --rollout-batch-size 16
+  --n-samples-per-prompt 4
+  --rollout-seed 20260956
+  --rollout-max-response-len 128
+  --rollout-max-context-len 1024
+  --rollout-temperature 1
+  --rollout-top-p 1
+  --rollout-top-k -1
+  --sglang-server-concurrency 2
+  --custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 1
+  --num-gpus-per-node 1
+  --global-batch-size 64
+  --micro-batch-size 1
+  --moss-local-packed-thd
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 1024
+  --max-samples-per-microbatch 2
+  --seq-length 1024
+  --max-position-embeddings 40960
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --update-weight-transfer-mode broadcast
+  --object-store-backend ray
+  --moss-local-old-policy-source trainer_preupdate
+  --moss-local-reuse-train-forward
+  --advantage-estimator grpo
+  --disable-grpo-std-normalization
+  --eps-clip 0.2
+  --eps-clip-high 0.2
+  --optimizer adam
+  --use-torch-adam
+  --lr 3e-06
+  --lr-decay-style constant
+  --weight-decay 0
+  --clip-grad 0
+  --attention-dropout 0
+  --hidden-dropout 0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --transformer-impl local
+  --no-persist-layer-norm
+  --no-rope-fusion
+  --no-gradient-accumulation-fusion
+  --no-masked-softmax-fusion
+  --log-interval 1
+  --use-tensorboard
+  --use-wandb
+  --wandb-project miles-run_moss_tts_local
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 

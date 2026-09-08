@@ -104,7 +104,9 @@ def build_dp_schedule(
                 else:
                     step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
             else:
-                step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
+                step_micro_batches = first_fit_decreasing_pack(
+                    step_lengths, max_per_bin, max_samples_per_bin=getattr(args, "max_samples_per_microbatch", None)
+                )
             # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
             target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
             if target != len(step_micro_batches):

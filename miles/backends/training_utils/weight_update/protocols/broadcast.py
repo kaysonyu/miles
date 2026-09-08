@@ -148,6 +148,7 @@ def update_weights_from_distributed(
     rollout_engines: Sequence[SGLangApiClient],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
+    weight_version: str | None = None,
 ) -> list[Future]:
     """
     Send metadata (HTTP), broadcast tensors (NCCL rank 0 → engines).
@@ -160,6 +161,7 @@ def update_weights_from_distributed(
                 shapes=[param.shape for _, param in converted_named_tensors],
                 selector=selector,
                 group_name=group_name,
+                **({"weight_version": weight_version} if weight_version is not None else {}),
             )
         )
         for client in rollout_engines
