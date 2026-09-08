@@ -19,6 +19,10 @@ _TENSOR_DTYPES: dict[str, torch.dtype] = {
     "code_masks": torch.bool,
     "rollout_decision_logprobs": torch.float32,
     "rollout_code_logprobs": torch.float32,
+    "teacher_decision_logprobs": torch.float32,
+    "teacher_code_logprobs": torch.float32,
+    "student_prefill_decision_logprobs": torch.float32,
+    "student_prefill_code_logprobs": torch.float32,
 }
 
 
@@ -30,6 +34,8 @@ def _tensorize_moss_rollout_data(rollout_data: RolloutBatch) -> None:
     for key, dtype in _TENSOR_DTYPES.items():
         if key in rollout_data:
             rollout_data[key] = [_cpu_tensor(value, dtype) for value in rollout_data[key]]
+            if key in {"teacher_code_logprobs", "student_prefill_code_logprobs"}:
+                rollout_data[key] = [value.reshape(-1, 12) for value in rollout_data[key]]
     for key in ("rollout_event_mask_sums",):
         if key in rollout_data:
             rollout_data[key] = _cpu_tensor(rollout_data[key], torch.float32)
@@ -129,6 +135,17 @@ class MossTTSLocalRolloutDataAdapter:
                 sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else sample.reward
                 for sample in samples
             ]
+        if getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
+            scores = [sample.metadata["mopd_scores"] for sample in samples]
+            train_data["teacher_decision_logprobs"] = [score["decision_logprobs"] for score in scores]
+            train_data["teacher_code_logprobs"] = [score["code_logprobs"] for score in scores]
+            train_data["student_prefill_decision_logprobs"] = [
+                score["student_score"]["decision_logprobs"] for score in scores
+            ]
+            train_data["student_prefill_code_logprobs"] = [score["student_score"]["code_logprobs"] for score in scores]
+            train_data["teacher_weight_digests"] = [score["teacher_weight_sha256"] for score in scores]
+            train_data["teacher_versions"] = [str(score["weight_version"]) for score in scores]
+            train_data["teacher_domains"] = [sample.metadata["mopd_teacher"] for sample in samples]
         return train_data
 
 

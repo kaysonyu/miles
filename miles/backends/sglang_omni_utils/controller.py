@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from miles.backends.sglang_omni_utils.api_client import SGLangOmniApiClient
 from miles.backends.sglang_omni_utils.external import discover_external_omni_engines
@@ -29,6 +29,16 @@ class OmniInferenceController(InferenceController):
             train_stage=self.args.sglang_omni_train_stage,
             admin_api_key=os.getenv(key_env) if key_env else None,
         )
+        if getattr(self.args, "moss_local_student_score_endpoint", None):
+            score_url = urlsplit(self.args.moss_local_student_score_endpoint)
+            score_base = urlunsplit((score_url.scheme, score_url.netloc, "", "", ""))
+            score_infos = await asyncio.to_thread(
+                discover_external_omni_engines,
+                [score_base],
+                train_stage=self.args.sglang_omni_train_stage,
+                admin_api_key=os.getenv(key_env) if key_env else None,
+            )
+            self._infos.extend(score_infos)
         self._clients = [SGLangOmniApiClient(info.base_url, info.train_stage, key_env) for info in self._infos]
         if self.args.check_weight_update_equal:
             await asyncio.gather(*(client.check_weights("snapshot") for client in self._clients))

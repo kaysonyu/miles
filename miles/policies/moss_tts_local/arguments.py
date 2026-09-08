@@ -25,6 +25,17 @@ def add_arguments(parser):
     group.add_argument("--max-samples-per-microbatch", type=int)
     group.add_argument("--use-torch-adam", action=argparse.BooleanOptionalAction, default=False)
     group.add_argument("--custom-pretrained-checkpoint-loader-path")
+    group.add_argument("--moss-local-objective", choices=["wer_grpo", "mopd"], default="wer_grpo")
+    group.add_argument("--moss-local-mopd-teachers", nargs="+")
+    group.add_argument("--moss-local-student-score-endpoint")
+    group.add_argument("--moss-local-mopd-default-domain", default=None)
+    group.add_argument("--moss-local-mopd-score-batch-size", type=int, default=8)
+    group.add_argument("--moss-local-mopd-batch-wait-ms", type=float, default=3.0)
+    group.add_argument("--moss-local-mopd-concurrency", type=int, default=4)
+    group.add_argument("--moss-local-mopd-timeout", type=float, default=120.0)
+    group.add_argument("--moss-local-mopd-retries", type=int, default=2)
+    group.add_argument("--moss-local-mopd-advantage-clip", type=float, default=5.0)
+
     return parser
 
 
@@ -92,3 +103,26 @@ def validate_args(args):
         raise ValueError("Use the dedicated MOSS held-out evaluator instead of the text eval fleet")
     if args.offload_rollout:
         raise ValueError("External Omni owns its memory lifecycle; disable rollout offload")
+
+    if args.moss_local_objective == "mopd":
+        from miles.policies.moss_tts_local.mopd_client import teacher_routes
+
+        routes = teacher_routes(args.moss_local_mopd_teachers)
+        if not args.moss_local_student_score_endpoint:
+            raise ValueError("MOPD requires --moss-local-student-score-endpoint for matched prefill scoring")
+        if not routes:
+            raise ValueError("MOPD requires frozen teacher scoring endpoints")
+        if args.moss_local_mopd_default_domain is not None and args.moss_local_mopd_default_domain not in routes:
+            raise ValueError("MOPD default domain must identify a configured teacher")
+        if not 1 <= args.moss_local_mopd_score_batch_size <= 64:
+            raise ValueError("MOPD score batch size must be in [1,64]")
+        if args.moss_local_mopd_concurrency < 1 or args.moss_local_mopd_timeout <= 0:
+            raise ValueError("MOPD scoring concurrency/timeout must be positive")
+        if (
+            args.moss_local_mopd_retries < 0
+            or args.moss_local_mopd_batch_wait_ms < 0
+            or args.moss_local_mopd_advantage_clip <= 0
+        ):
+            raise ValueError("Invalid MOPD retry/wait/clip configuration")
+        if args.group_rm:
+            raise ValueError("Local MOPD supplies per-action advantages, not group rewards")

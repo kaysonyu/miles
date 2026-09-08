@@ -150,6 +150,11 @@ class MossTTSLocalRolloutState(metaclass=SingletonMeta):
         self.semaphore = asyncio.Semaphore(concurrency)
         self._inflight = [0] * len(self.adapters)
         self._selection_lock = asyncio.Lock()
+        self.teacher = None
+        if getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
+            from miles.policies.moss_tts_local.mopd_client import LocalTeacherClient
+
+            self.teacher = LocalTeacherClient(args)
 
     @asynccontextmanager
     async def lease(self):
@@ -164,6 +169,8 @@ class MossTTSLocalRolloutState(metaclass=SingletonMeta):
                     self._inflight[index] -= 1
 
     def close(self) -> None:
+        if self.teacher is not None:
+            run(self.teacher.close())
         for adapter in self.adapters:
             adapter.close()
 
@@ -201,6 +208,9 @@ async def _generate_and_reward(
     seed: int,
 ) -> Sample:
     sample = await generate_one(args, sample, rollout_id=rollout_id, seed=seed)
+    state = MossTTSLocalRolloutState(args)
+    if state.teacher is not None:
+        return await state.teacher.score(sample, temperature=args.rollout_temperature)
     if not args.group_rm and sample.reward is None:
         sample.reward = await async_rm(args, sample)
     return sample
@@ -280,6 +290,15 @@ async def generate_rollout_async(args: Namespace, rollout_id: int, data_source) 
         ),
     }
     metrics.update(_wer_rollout_metrics(generated))
+    state = MossTTSLocalRolloutState(args)
+    if state.teacher is not None:
+        metrics.update(
+            {
+                "mopd/teacher_requests_total": state.teacher.requests,
+                "mopd/teacher_samples_total": state.teacher.samples,
+                "mopd/teacher_http_seconds_total": state.teacher.http_seconds,
+            }
+        )
     return RolloutFnTrainOutput(samples=generated, metrics=metrics)
 
 

@@ -149,6 +149,8 @@ def _moss_loss_closure(
     *,
     trainer_output_collector: dict[str, list[torch.Tensor]] | None = None,
     parity_values: list[torch.Tensor] | None = None,
+    teacher_scores: tuple[torch.Tensor, torch.Tensor] | None = None,
+    student_scores: tuple[torch.Tensor, torch.Tensor] | None = None,
 ):
     if batch.advantages is None:
         raise ValueError("MOSS-TTS Local train batch is missing advantages.")
@@ -169,16 +171,33 @@ def _moss_loss_closure(
         parity_values.append(
             active_parity.abs().max() if active_parity.numel() else output.joint_logprobs.detach().sum() * 0.0
         )
-    loss_output = frame_joint_grpo_loss(
-        output.joint_logprobs,
-        old_joint_logprobs,
-        batch.advantages,
-        batch.decision_mask,
-        batch.decision_offsets,
-        eps_clip=float(args.eps_clip),
-        eps_clip_high=float(args.eps_clip_high),
-        sample_reduction="sum",
-    )
+    mopd_advantage_abs = None
+    if getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
+        from miles.policies.moss_tts_local.mopd_loss import action_mopd_loss
+
+        if teacher_scores is None:
+            raise ValueError("MOPD requires teacher scores for every microbatch")
+        loss_output, mopd_advantage_abs = action_mopd_loss(
+            output,
+            batch,
+            *teacher_scores,
+            advantage_clip=args.moss_local_mopd_advantage_clip,
+            eps_clip=float(args.eps_clip),
+            eps_clip_high=float(args.eps_clip_high),
+            ratio_source=args.moss_local_old_policy_source,
+            student_scores=student_scores,
+        )
+    else:
+        loss_output = frame_joint_grpo_loss(
+            output.joint_logprobs,
+            old_joint_logprobs,
+            batch.advantages,
+            batch.decision_mask,
+            batch.decision_offsets,
+            eps_clip=float(args.eps_clip),
+            eps_clip_high=float(args.eps_clip_high),
+            sample_reduction="sum",
+        )
     # ``loss_output`` contains per-sample means summed across this physical
     # micro-batch.  Megatron divides each micro-batch by ``num_microbatches``;
     # the inverse factor below plus the step-global divisor therefore yields
@@ -200,11 +219,15 @@ def _moss_loss_closure(
             loss_output.ratio_mean,
         ]
     )
+    metric_keys = ["loss", "pg_loss", "pg_clipfrac", "ppo_kl", "ratio_mean"]
+    if mopd_advantage_abs is not None:
+        metric_keys.append("mopd_advantage_abs")
+        metric_values = torch.cat((metric_values, mopd_advantage_abs.reshape(1)))
     return (
         scaled_loss,
         torch.tensor(1, device=sample_sum_loss.device),
         {
-            "keys": ["loss", "pg_loss", "pg_clipfrac", "ppo_kl", "ratio_mean"],
+            "keys": metric_keys,
             "values": metric_values,
         },
     )
@@ -228,7 +251,27 @@ def _make_train_forward_step(
             and trainer_output_collector is not None
         ):
             batch_keys.append("old_joint_logprobs")
+        is_mopd = getattr(args, "moss_local_objective", "wer_grpo") == "mopd"
+        if is_mopd:
+            batch_keys.extend(
+                [
+                    "teacher_decision_logprobs",
+                    "teacher_code_logprobs",
+                    "student_prefill_decision_logprobs",
+                    "student_prefill_code_logprobs",
+                ]
+            )
         raw_batch = data_iterator.get_next(batch_keys)
+        teacher_scores = student_scores = None
+        if is_mopd:
+            teacher_scores = (
+                torch.cat(raw_batch["teacher_decision_logprobs"]),
+                torch.cat([value.reshape(-1, 12) for value in raw_batch["teacher_code_logprobs"]]),
+            )
+            student_scores = (
+                torch.cat(raw_batch["student_prefill_decision_logprobs"]),
+                torch.cat([value.reshape(-1, 12) for value in raw_batch["student_prefill_code_logprobs"]]),
+            )
         batch = collate_moss_tts_local_batch(
             raw_batch,
             packed_thd=bool(getattr(args, "moss_local_packed_thd", False)),
@@ -242,6 +285,8 @@ def _make_train_forward_step(
             step_global_batch_size,
             trainer_output_collector=trainer_output_collector,
             parity_values=parity_values,
+            teacher_scores=teacher_scores,
+            student_scores=student_scores,
         )
 
     return forward_step
@@ -309,6 +354,14 @@ class MossTTSLocalTrainingWorkflow:
             elif key in ("decision_masks", "code_masks"):
                 dtype = torch.bool
             data[key] = [value.to(device=device, dtype=dtype, non_blocking=True) for value in data[key]]
+        for key in (
+            "teacher_decision_logprobs",
+            "teacher_code_logprobs",
+            "student_prefill_decision_logprobs",
+            "student_prefill_code_logprobs",
+        ):
+            if key in data:
+                data[key] = [value.to(device=device, dtype=torch.float32, non_blocking=True) for value in data[key]]
         versions = {str(version) for version in data.get("weight_versions", [])}
         if len(versions) != 1:
             raise ValueError(f"MOSS-TTS Local rollout shard has mixed weight versions: {sorted(versions)}")
@@ -467,6 +520,22 @@ class MossTTSLocalTrainingWorkflow:
             )
             for reward, decision_mask in zip(rollout_data["rewards"], rollout_data["decision_masks"], strict=True)
         ]
+        if getattr(context.args, "moss_local_objective", "wer_grpo") == "mopd":
+            clip = context.args.moss_local_mopd_advantage_clip
+            rollout_data["advantages"] = [
+                (teacher - student).clamp(-clip, clip)
+                for teacher, student in zip(
+                    rollout_data["teacher_decision_logprobs"],
+                    rollout_data["student_prefill_decision_logprobs"],
+                    strict=True,
+                )
+            ]
+            rollout_data["code_advantages"] = [
+                (teacher.reshape(-1, 12) - student).clamp(-clip, clip)
+                for teacher, student in zip(
+                    rollout_data["teacher_code_logprobs"], rollout_data["student_prefill_code_logprobs"], strict=True
+                )
+            ]
         if actor.rollout_data_postprocess is not None:
             actor.rollout_data_postprocess(context.args)
 

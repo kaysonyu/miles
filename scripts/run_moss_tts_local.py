@@ -46,6 +46,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     max_response_len: int = 128
     learning_rate: float = 3e-6
     save_interval: int = 32
+    objective: str = "wer_grpo"
+    teachers: str = ""
+    student_score_endpoint: str = ""
+    teacher_default_domain: str = "speech"
     resume: bool = False
     extra_args: str = ""
 
@@ -55,8 +59,9 @@ def execute(args: ScriptArgs):
     checkpoint = (
         f"--hf-checkpoint {q(args.model_dir + '/' + args.model_name)} "
         f"--pretrained-checkpoint {q(args.pretrained_checkpoint)} "
-        f"--save {q(args.output_dir + '/checkpoints')} --save-interval {args.save_interval} "
     )
+    if args.save_interval > 0:
+        checkpoint += f"--save {q(args.output_dir + '/checkpoints')} --save-interval {args.save_interval} "
     checkpoint += (
         f"--load {q(args.output_dir + '/checkpoints')} --use-checkpoint-opt-param-scheduler "
         if args.resume
@@ -72,8 +77,23 @@ def execute(args: ScriptArgs):
         f"--rollout-max-response-len {args.max_response_len} --rollout-max-context-len 1024 "
         "--rollout-temperature 1 --rollout-top-p 1 --rollout-top-k -1 "
         f"--sglang-server-concurrency {args.rollout_concurrency} "
-        "--custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func "
     )
+    if args.objective == "wer_grpo":
+        rollout += "--custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func "
+    elif args.objective == "mopd":
+        if not args.teachers or not args.student_score_endpoint:
+            raise ValueError(
+                "--objective mopd requires --teachers DOMAIN=URL[,DOMAIN=URL] and --student-score-endpoint"
+            )
+        rollout += (
+            "--moss-local-objective mopd --moss-local-mopd-teachers "
+            + " ".join(q(item) for item in args.teachers.split(","))
+            + " "
+            + f"--moss-local-mopd-default-domain {q(args.teacher_default_domain)} "
+            + f"--moss-local-student-score-endpoint {q(args.student_score_endpoint)} "
+        )
+    else:
+        raise ValueError(f"Unknown objective: {args.objective}")
     training = (
         f"--actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "

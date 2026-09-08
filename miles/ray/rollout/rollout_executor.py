@@ -102,6 +102,9 @@ class RolloutExecutor:
     # TODO: may have a `async def init` here later
 
     def dispose(self):
+        if getattr(self.args, "policy_family", "text") == "moss_tts_local":
+            from miles.policies.moss_tts_local.rollout import dispose_rollout_state
+            dispose_rollout_state()
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
