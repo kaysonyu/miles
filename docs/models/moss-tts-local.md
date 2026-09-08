@@ -14,6 +14,8 @@ Launch each Omni replica on a GPU outside the trainer Ray allocation, using Omni
 --vocoder.factory.cuda_graph false
 ```
 
+The vocoder `cuda_graph` option accelerates the streaming `_CodecStreamSession.step` path. Miles RL uses the non-streaming `/generate` route, whose vocoder runs `decode_codes_batch`; those requests do not replay the streaming graphs. Keep this option disabled for the RL recipe to avoid unused capture work and graph memory. Graph/eager equivalence for streaming must use identical chunk boundaries: full-sequence and streaming decode are not interchangeable waveform baselines.
+
 Do not infer evaluation repeatability from `concurrency=1` or a fixed seed alone. Leaving Radix Cache enabled changed generated actions in a no-update control; re-establish the baseline after changing these settings. Then run:
 
 ```bash
