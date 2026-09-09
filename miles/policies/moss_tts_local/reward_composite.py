@@ -87,15 +87,20 @@ async def reward_batch(args: Any, samples: list[Sample], **kwargs: Any) -> list[
     if not samples:
         return []
     components = active_components(args)
-    tasks: dict[str, Any] = {}
     names = {item.name for item in components if item.weight > 0}
-    if "wer" in names:
-        tasks["wer"] = asyncio.gather(*(wer_reward.reward_func(args, sample) for sample in samples))
-    if "sim" in names:
-        tasks["sim"] = sim_wer_reward.score_similarity_batch(samples)
-    if "rm" in names:
-        tasks["rm"] = asyncio.gather(*(rm_reward.reward_func(args, sample) for sample in samples))
-    results = {name: await task for name, task in tasks.items()}
+
+    async def score_component(name: str) -> Any:
+        if name == "wer":
+            return await asyncio.gather(*(wer_reward.reward_func(args, sample) for sample in samples))
+        if name == "sim":
+            return await sim_wer_reward.score_similarity_batch(samples)
+        if name == "rm":
+            return await asyncio.gather(*(rm_reward.reward_func(args, sample) for sample in samples))
+        raise AssertionError(f"Unknown active reward component: {name}")
+
+    active_names = tuple(sorted(names))
+    active_results = await asyncio.gather(*(score_component(name) for name in active_names))
+    results = dict(zip(active_names, active_results, strict=True))
 
     rewards: list[float] = []
     for index, sample in enumerate(samples):
