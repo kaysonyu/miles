@@ -3,7 +3,11 @@ from argparse import Namespace
 import pytest
 
 from miles.backends.sglang_omni_utils.api_client import SGLangOmniApiClient
-from miles.policies.moss_tts_local.checkpoint import has_resume_checkpoint
+from miles.policies.moss_tts_local.checkpoint import (
+    has_resume_checkpoint,
+    validate_optimizer_backend_resume,
+    validate_resume_implementation,
+)
 from miles.policies.moss_tts_local.rollout_data import split_raw
 from miles.utils.seqlen_balancing import first_fit_decreasing_pack
 
@@ -42,6 +46,59 @@ def test_pretrained_load_is_not_used_for_a_resume_checkpoint(tmp_path):
     assert not has_resume_checkpoint(tmp_path)
     (tmp_path / "latest_checkpointed_iteration.txt").write_text("3")
     assert has_resume_checkpoint(tmp_path)
+
+
+@pytest.mark.parametrize("layout", ["dp_reshardable", "dp_zero_gather_scatter", None])
+@pytest.mark.parametrize("saved,current", [("local", "transformer_engine"), ("transformer_engine", "local")])
+def test_moss_rejects_bucket_optimizer_resume_across_implementations(layout, saved, current):
+    with pytest.raises(ValueError, match="dist-ckpt-optim-fully-reshardable"):
+        validate_optimizer_backend_resume(saved, current, layout)
+
+
+@pytest.mark.parametrize("impl", ["local", "transformer_engine"])
+def test_moss_allows_same_backend_bucket_resume(impl):
+    validate_optimizer_backend_resume(impl, impl, "dp_reshardable")
+
+
+@pytest.mark.parametrize("layout", ["fully_reshardable", "fully_sharded_model_space"])
+def test_moss_allows_parameter_based_optimizer_resume_across_implementations(layout):
+    validate_optimizer_backend_resume("local", "transformer_engine", layout)
+
+
+def test_resume_backend_guard_does_not_apply_to_other_policies():
+    validate_resume_implementation(Namespace(policy_family="text"))
+
+
+@pytest.mark.parametrize(
+    "finetune,no_load_optim,distributed", [(True, False, True), (False, True, True), (False, False, False)]
+)
+def test_resume_backend_guard_skips_without_distributed_optimizer_restore(finetune, no_load_optim, distributed):
+    validate_resume_implementation(
+        Namespace(
+            policy_family="moss_tts_local",
+            finetune=finetune,
+            no_load_optim=no_load_optim,
+            use_distributed_optimizer=distributed,
+        )
+    )
+
+
+def test_megatron_resume_calls_moss_guard_without_a_pretrained_path(monkeypatch, tmp_path):
+    from miles.backends.megatron_utils import checkpoint as backend
+    from miles.policies.moss_tts_local import checkpoint as policy
+
+    (tmp_path / "marker").write_text("checkpoint")
+    args = Namespace(policy_family="moss_tts_local", load=str(tmp_path), custom_pretrained_checkpoint_loader_path=None)
+    monkeypatch.setattr(backend, "get_args", lambda: args)
+    monkeypatch.setattr(backend, "_is_megatron_checkpoint", lambda path: True)
+    monkeypatch.setattr(backend, "is_dsv4_model", lambda args: False)
+
+    def reject(args):
+        raise ValueError("resume guard reached before optimizer load")
+
+    monkeypatch.setattr(policy, "validate_resume_implementation", reject)
+    with pytest.raises(ValueError, match="resume guard reached"):
+        backend.load_checkpoint([], None, None, {}, False)
 
 
 @pytest.mark.asyncio

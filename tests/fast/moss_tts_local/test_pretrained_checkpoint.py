@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 
 from miles.policies.moss_tts_local.pretrained_checkpoint import (
     _validate_manifest_identity,
+    _validate_native_load_state,
     remap_moss_tts_local_sharded_keys,
     remove_runtime_extra_state,
     validate_dcp_mismatches,
@@ -125,3 +128,23 @@ def test_strict_dcp_audit_allows_only_checkpoint_runtime_objects():
         validate_dcp_mismatches({"audio_lm_heads.0.weight"}, set())
     with pytest.raises(ValueError, match="model_only"):
         validate_dcp_mismatches(set(), {"local_text_lm_head.weight"})
+
+
+def test_native_te_load_accepts_only_explicitly_excluded_runtime_state():
+    excluded = {"language_model.decoder.final_layernorm._extra_state"}
+    _validate_native_load_state(SimpleNamespace(missing_keys=list(excluded), unexpected_keys=[]), excluded)
+    _validate_native_load_state(SimpleNamespace(missing_keys=[], unexpected_keys=[]), excluded)
+
+
+@pytest.mark.parametrize("missing", ["audio_lm_heads.0.weight", "unlisted._extra_state"])
+def test_native_te_load_keeps_other_missing_state_strict(missing):
+    with pytest.raises(ValueError, match="native load-state mismatch"):
+        _validate_native_load_state(
+            SimpleNamespace(missing_keys=[missing], unexpected_keys=[]),
+            {"language_model.decoder.final_layernorm._extra_state"},
+        )
+
+
+def test_native_te_load_rejects_unexpected_runtime_state():
+    with pytest.raises(ValueError, match="native load-state mismatch"):
+        _validate_native_load_state(SimpleNamespace(missing_keys=[], unexpected_keys=["extra._extra_state"]), set())

@@ -144,6 +144,19 @@ def validate_dcp_mismatches(checkpoint_only_keys: set[str], model_only_keys: set
         )
 
 
+def _validate_native_load_state(incompatible, runtime_extra_state_keys: set[str]) -> None:
+    # Only accept the exact runtime keys removed before DCP loading. Real
+    # tensors and any other missing or unexpected state remain strict failures.
+    missing = set(incompatible.missing_keys) - runtime_extra_state_keys
+    unexpected = set(incompatible.unexpected_keys)
+    if missing or unexpected:
+        raise ValueError(
+            "MOSS-TTS Local native load-state mismatch after strict DCP load: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, "
+            f"excluded_runtime_extra_state={sorted(runtime_extra_state_keys)}"
+        )
+
+
 def load_moss_tts_local_pretrained_checkpoint(
     args: argparse.Namespace,
     model: Sequence[torch.nn.Module],
@@ -204,14 +217,7 @@ def load_moss_tts_local_pretrained_checkpoint(
     )
     validate_dcp_mismatches(checkpoint_only_keys, model_only_keys)
     incompatible = model[0].load_state_dict(loaded_state["model"], strict=False)
-    missing = set(incompatible.missing_keys)
-    unexpected = set(incompatible.unexpected_keys)
-    if missing or unexpected:
-        raise ValueError(
-            "MOSS-TTS Local native load-state mismatch after strict DCP load: "
-            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, "
-            f"excluded_runtime_extra_state={sorted(runtime_extra_state_keys)}"
-        )
+    _validate_native_load_state(incompatible, runtime_extra_state_keys)
 
 
 __all__ = [

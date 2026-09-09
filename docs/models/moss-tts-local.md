@@ -36,6 +36,8 @@ The supported baseline uses TP/PP/CP/EP=1, full-model training, BF16, packed THD
 
 The `trainer_preupdate` mode is an explicitly labeled same-forward policy-gradient surrogate. It retains server/trainer logprob discrepancy metrics; a ratio of one does not establish behavior-policy PPO parity. The stricter `server_behavior` mode fails when its configured parity threshold is exceeded.
 
+The optional full Transformer Engine path has separate [numerical and performance experiments](moss-tts-local-te.md). The validated default remains `local` with TE packed attention; selecting full TE changes the global decoder kernels and is not a bitwise-equivalent switch.
+
 ## Evaluation
 
 Use `tools/moss_tts_local/evaluate_wer.py` against a fixed endpoint with `--concurrency 1`, a held-out JSONL dataset and repeated `--seed` values. Run a no-update repeat before comparing trained weights. `tools/moss_tts_local/compare_wer_eval.py` compares matching prompt/seed records using prompt-level bootstrap confidence intervals. Keep raw transcripts, effective/raw WER and invalid-language/quality failures. Training reward alone is not evidence of held-out improvement.

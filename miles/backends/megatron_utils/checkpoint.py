@@ -129,6 +129,10 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
+        if getattr(args, "policy_family", None) == "moss_tts_local":
+            from miles.policies.moss_tts_local.checkpoint import validate_resume_implementation
+
+            validate_resume_implementation(args)
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
