@@ -292,3 +292,32 @@ All owned experiment servers and Ray processes were cleaned up. The final GPU
 lease restored `gpu-occupy` on GPUs 0,1,2,3. No environment package changes or new
 image were required; this delivery uses the existing editable installs. Omni
 implementation commit: `8b9264cc` on `moss-local-mopd`.
+
+## Refactor revalidation (2026-09-10)
+
+The Local scoring patch was split by responsibility while retaining the
+`sglang_omni.models.moss_tts_local.scoring` compatibility import and the
+`/score_actions` request/response contract. The current SGLang-Omni commit is
+`e2dc5de63038f3f311f6ab4fe302777c8b94578d` on `moss-tts-local`; Miles is
+`d5d92530c5d0af415d1f4fad027d42234b2a9a5c` on the same branch. The scoring
+math, request adapter, and engine/prefill admission now live in
+`scoring_math.py`, `scoring_runtime.py`, and `scoring_engine.py`.
+
+The real post-refactor run is
+`/inspire/qb-ilm2/project/cq-scientific-cooperation-zone/public/kyu/runs/miles-moss-mopd/20260909/refactor-mopd-r2`.
+It used two frozen Local fixture teachers (`fixture_a`, `fixture_b`), one
+updatable student scoring endpoint, two generation endpoints, four rollouts,
+batch size 8, and four optimizer steps from an existing async checkpoint. The
+trainer returned 0. All four steps had eight unique samples; both teacher
+domains were exercised (11 and 21 samples), the maximum clipped advantage was
+1.2180, and gradient norms were 1.6491, 1.2195, 1.0846, and 2.6262. Frozen
+teacher checks remained true, and student refit versions 1 through 5 completed.
+The two steady steps averaged 3.9270 seconds.
+
+This is a functional and numerical revalidation of the refactored MOPD path:
+teacher/student paired prefill scoring, domain routing, nonzero
+advantage/loss/gradient, refit, and checkpoint behavior all worked on H200.
+The fixture teachers are frozen base-compatible checkpoints rather than
+trained domain teachers, so this run does not establish distillation quality or
+WER/MOS improvement. The separate MOPD audit is
+`refactor-mopd-r2/audit.json`.
