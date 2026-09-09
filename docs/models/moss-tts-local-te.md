@@ -42,7 +42,9 @@ All variants keep the same Torch Adam path and precision. It is not an FP8 test.
 Full TE alone is about 13–15% slower here. The fusion candidate is about 5% faster
 than local in this small replay benchmark. These are **trainer** timings, not
 end-to-end RL throughput; previous MOPD iterations spent most of their wall time
-waiting for rollout/scoring. Keep the original default pending quality validation.
+waiting for rollout/scoring. Keep the original default; the later matched
+real-training study has not established non-inferiority or an end-to-end speed
+advantage.
 
 ## Numerical behavior
 
@@ -167,7 +169,8 @@ under TE first. Setting the fully-reshardable flag only at load time does not
 convert an existing bucket-based checkpoint.
 
 Final focused policy/loader/resume/launcher regression checks: 109 passed. The
-production local default and environment packages remain unchanged. No held-out
-WER comparison between trained local and TE variants was performed; the short
-live tests establish integration/state integrity, not equal learning quality.
+production local default and environment packages remain unchanged. These initial
+short tests establish integration/state integrity. A subsequent
+[matched real WER training study](moss-tts-local-te-training.md) compares 32-update
+Local and full-TE runs on the held-out set; it does not establish equivalence.
 All owned GPU experiments finished and occupancy was restored on GPUs 0/1/2/3.
