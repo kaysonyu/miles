@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from functools import partial
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from miles.policies.moss_tts_local.batch import (
     MossTTSLocalPolicyBatch,
     collate_moss_tts_local_batch,
 )
+from miles.policies.moss_tts_local.async_policy import policy_lag, replay_behavior
 from miles.policies.moss_tts_local.debug import build_moss_tts_local_debug_shard
 from miles.policies.moss_tts_local.loss import frame_joint_grpo_loss
 from miles.policies.moss_tts_local.policy import MossTTSLocalPolicyOutput
@@ -164,6 +166,9 @@ def _moss_loss_closure(
         old_joint_logprobs = output.joint_logprobs.detach()
         if trainer_output_collector is None or parity_values is None:
             raise RuntimeError("MOSS-TTS Local same-forward replay requires output and parity collectors.")
+    if trainer_output_collector is not None:
+        if parity_values is None:
+            raise RuntimeError("Local train output collection requires parity storage")
         captured = _collect_policy_output(output, batch=batch)
         for key, values in captured.items():
             trainer_output_collector.setdefault(f"trainer_{key}", []).extend(values)
@@ -326,6 +331,9 @@ def _log_training_metrics(
             {
                 "train/moss_logprob_parity_max_abs": float(parity_max_abs),
                 "train/moss_old_policy_is_trainer_surrogate": float(source == "trainer_preupdate"),
+                "train/moss_old_policy_is_behavior_snapshot": float(source == "trainer_behavior"),
+                "train/moss_policy_lag": float(rollout_data.get("policy_lags", [0])[0]),
+                "train/moss_behavior_replay_seconds": float(rollout_data.get("behavior_replay_seconds", 0.0)),
                 "train/moss_actor_cpu_backup_skipped": float(not cpu_backup_required),
                 "train/moss_packed_thd": float(bool(getattr(context.args, "moss_local_packed_thd", False))),
                 "train/moss_microbatches_per_rank": float(sum(num_microbatches)),
@@ -459,26 +467,36 @@ class MossTTSLocalTrainingWorkflow:
         if external_data is not None:
             raise ValueError("MOSS-TTS Local P0 does not accept critic/external actor data.")
         actor = context.actor
+        async_mode = bool(getattr(context.args, "moss_local_async", False))
+        if async_mode:
+            logger.info("MOSS async train start: rollout=%d timestamp=%.6f", rollout_id, time.time())
         data_iterator, num_microbatches = get_data_iterator(context.args, context.model, rollout_data)
         num_microbatches = rollout_data["num_microbatches"]
         global_batch_sizes = rollout_data["num_rollouts"]
         _log_packing(context, rollout_data)
         rollout_versions = {str(version) for version in rollout_data["weight_versions"]}
         expected_version = str(actor.weight_updater.weight_version)
-        if not context.args.debug_train_only and rollout_versions != {expected_version}:
-            raise RuntimeError(
-                "MOSS-TTS Local rollout/trainer version mismatch: "
-                f"rollout={sorted(rollout_versions)}, trainer_serving_version={expected_version}."
-            )
+        lag = 0 if context.args.debug_train_only else policy_lag(
+            rollout_versions, expected_version, allow_one_step=async_mode
+        )
+        rollout_data["policy_lags"] = [lag] * len(rollout_data["rewards"])
 
         source = context.args.moss_local_old_policy_source
         reuse_train_forward = bool(
-            source == "trainer_preupdate"
+            source in {"trainer_preupdate", "trainer_behavior"}
             and getattr(context.args, "moss_local_reuse_train_forward", True)
             and actor.rollout_data_postprocess is None
         )
         server_joint = self._server_joint_logprobs(rollout_data)
         rollout_data["server_joint_logprobs"] = server_joint
+        if source == "trainer_behavior":
+            started = time.perf_counter()
+            behavior_version = next(iter(rollout_versions))
+            with inverse_timer("train_wait"), timer("train"), timer("behavior_replay"):
+                behavior = replay_behavior(self, context, data_iterator, num_microbatches, behavior_version)
+            rollout_data["old_joint_logprobs"] = [value.detach() for value in behavior["behavior_joint_logprobs"]]
+            rollout_data["behavior_snapshot_versions"] = [behavior_version] * len(server_joint)
+            rollout_data["behavior_replay_seconds"] = time.perf_counter() - started
         parity_max_abs = None
         if not reuse_train_forward:
             trainer_outputs = self.compute_log_probs(
@@ -508,6 +526,8 @@ class MossTTSLocalTrainingWorkflow:
         elif source == "trainer_preupdate":
             if not reuse_train_forward:
                 rollout_data["old_joint_logprobs"] = [value.detach() for value in trainer_joint]
+        elif source == "trainer_behavior":
+            pass  # The matching version was replayed before restoring current actor weights.
         else:
             raise ValueError(f"Unknown MOSS-TTS Local old-policy source {source!r}.")
 
@@ -571,7 +591,8 @@ class MossTTSLocalTrainingWorkflow:
                     f"expected {expected_samples}, got {len(trainer_joint)}."
                 )
             rollout_data.update(trainer_output_collector)
-            rollout_data["old_joint_logprobs"] = [value.detach() for value in trainer_joint]
+            if source == "trainer_preupdate":
+                rollout_data["old_joint_logprobs"] = [value.detach() for value in trainer_joint]
             parity_max_abs = self._collected_parity_max_abs(parity_values)
             rollout_data["logprob_parity_max_abs"] = parity_max_abs.detach()
         _save_debug_train_data(context.args, rollout_id=rollout_id, rollout_data=rollout_data)
@@ -579,6 +600,8 @@ class MossTTSLocalTrainingWorkflow:
         cpu_backup_required = actor._enable_weight_backup
         if cpu_backup_required:
             context.weights_backuper.backup("actor")
+        if async_mode:
+            logger.info("MOSS async train end: rollout=%d timestamp=%.6f", rollout_id, time.time())
 
         _log_training_metrics(
             context,

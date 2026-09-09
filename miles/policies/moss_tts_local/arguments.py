@@ -2,6 +2,8 @@
 
 import argparse
 
+from miles.policies.moss_tts_local.async_policy import validate_configuration
+
 
 def add_arguments(parser):
     group = parser.add_argument_group("MOSS-TTS Local")
@@ -13,8 +15,11 @@ def add_arguments(parser):
     group.add_argument("--structured-rollout-version", type=int, default=2)
     group.add_argument("--moss-local-trainable-scope", choices=["full", "local_audio", "local_only"], default="full")
     group.add_argument(
-        "--moss-local-old-policy-source", choices=["trainer_preupdate", "server_behavior"], default="trainer_preupdate"
+        "--moss-local-old-policy-source",
+        choices=["trainer_preupdate", "server_behavior", "trainer_behavior"],
+        default="trainer_preupdate",
     )
+    group.add_argument("--moss-local-async", action="store_true", help="Opt into one-batch-ahead Local WER training")
     group.add_argument("--moss-local-logprob-parity-max-abs", type=float, default=1e-3)
     group.add_argument("--moss-local-reuse-train-forward", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--moss-local-packed-thd", action=argparse.BooleanOptionalAction, default=False)
@@ -45,6 +50,7 @@ def validate_args(args):
         raise ValueError("--max-samples-per-microbatch requires a positive value and dynamic batching")
     if args.policy_family != "moss_tts_local":
         return
+    validate_configuration(args)
     if args.train_backend != "megatron" or args.rollout_backend != "sglang_omni":
         raise ValueError("MOSS requires Megatron training and --rollout-backend=sglang_omni")
     if not args.debug_train_only and not args.sglang_omni_endpoints:

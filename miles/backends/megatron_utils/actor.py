@@ -861,6 +861,22 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("rollout_actor")
                 else:
                     self.weights_backuper.backup("old_actor")
+                if (
+                    getattr(self.args, "policy_family", "text") == "moss_tts_local"
+                    and self.args.moss_local_old_policy_source == "trainer_behavior"
+                ):
+                    from miles.policies.moss_tts_local.async_policy import record_snapshot_versions
+
+                    record_snapshot_versions(self, self.weight_updater.weight_version)
+                    if int(self.weight_updater.weight_version) == 1:
+                        sizes = {
+                            tag: sum(
+                                tensor.numel() * tensor.element_size()
+                                for tensor in self.weights_backuper.get(tag).values()
+                            )
+                            for tag in ("actor", "old_actor", "rollout_actor")
+                        }
+                        logger.info("MOSS CPU snapshot bytes per rank: %s", sizes)
 
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")

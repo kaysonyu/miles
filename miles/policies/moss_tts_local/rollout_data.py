@@ -84,6 +84,8 @@ class MossTTSLocalRolloutDataAdapter:
                 )
             trajectories.append(trajectory)
 
+        if len({str(trajectory.weight_version) for trajectory in trajectories}) != 1:
+            raise ValueError("MOSS training batches must not mix generating weight versions")
         raw_rewards, rewards = reward_postprocess(samples)
         if len(raw_rewards) != len(samples) or len(rewards) != len(samples):
             raise ValueError("Reward post-processing must return one raw and normalized reward per sample.")

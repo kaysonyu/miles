@@ -3709,6 +3709,13 @@ def validate_async_off_policy_correction(args) -> None:
     advantages) to a policy that never generated the trajectory; the recorded
     ``weight_versions`` are a metric, not an enforcement mechanism.
     """
+    if getattr(args, "policy_family", "text") == "moss_tts_local":
+        from miles.policies.moss_tts_local.async_policy import validate_configuration
+
+        if not getattr(args, "moss_local_async", False):
+            raise ValueError("Local train_async.py requires explicit --moss-local-async")
+        validate_configuration(args)
+        return
     if not args.use_critic:
         return
     assert args.use_rollout_logprobs or args.use_tis or args.keep_old_actor, (

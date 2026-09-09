@@ -172,3 +172,23 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+
+async def test_local_pipeline_keeps_cleanup_and_saves_only_the_drained_final_batch(monkeypatch):
+    args = _make_args(
+        num_rollout=2,
+        save_interval=2,
+        policy_family="moss_tts_local",
+        moss_local_async=True,
+        moss_local_old_policy_source="trainer_behavior",
+        keep_old_actor=True,
+    )
+    events = []
+    components = _install_driver_fakes(monkeypatch, args, events)
+    await train_async_driver.train(args)
+    assert components.actor_model.trained == [0, 1]
+    assert components.actor_model.saved == [1]
+    assert events.count("actor_clear_memory") == 2
+    assert "generate_start:2" not in events
+    assert events.index("generate_done:1") < events.index("update_weights:0")
+    assert events.index("generate_done:1") < events.index("actor_save:1")

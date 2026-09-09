@@ -12,6 +12,8 @@ _DEBUG_PER_SAMPLE_KEYS = (
     "sample_indices",
     "rollout_ids",
     "weight_versions",
+    "policy_lags",
+    "behavior_snapshot_versions",
     "rewards",
     "prompt_lengths",
     "frame_lengths",
