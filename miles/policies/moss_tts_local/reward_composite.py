@@ -154,7 +154,13 @@ async def reward_batch(args: Any, samples: list[Sample], **kwargs: Any) -> list[
     return rewards
 
 
-async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:
-    """Per-sample entry point used by Miles' standard reward dispatch."""
+async def reward_func(
+    args: Any,
+    sample: Sample | list[Sample],
+    **kwargs: Any,
+) -> float | list[float]:
+    """Handle both Miles' per-sample and group-RM reward dispatch."""
 
+    if isinstance(sample, list):
+        return await reward_batch(args, sample, **kwargs)
     return (await reward_batch(args, [sample], **kwargs))[0]

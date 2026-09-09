@@ -66,3 +66,22 @@ async def test_composite_records_all_active_component_values(monkeypatch):
     )
     assert result == [pytest.approx(0.7)]
     assert set(sample.metadata["reward_components"]) == {"wer", "rm"}
+
+
+@pytest.mark.asyncio
+async def test_composite_entrypoint_accepts_group_rm(monkeypatch):
+    samples = [Sample(label="one", artifacts=[]), Sample(label="two", artifacts=[])]
+
+    async def fake_wer(_args, sample):
+        sample.metadata = dict(sample.metadata or {})
+        sample.metadata["wer"] = 0.1
+        return 0.9
+
+    monkeypatch.setattr(reward_composite.wer_reward, "reward_func", fake_wer)
+    values = await reward_composite.reward_func(
+        SimpleNamespace(moss_local_reward_components="wer=1.0"),
+        samples,
+    )
+
+    assert values == [0.9, 0.9]
+    assert all(sample.metadata["reward"] == 0.9 for sample in samples)

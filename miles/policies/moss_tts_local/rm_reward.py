@@ -190,7 +190,15 @@ async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:
     metadata["rm_rubric_scores"] = values
     metadata["rm_model"] = config.model
     metadata["rm_reward"] = reward
-    sample.metadata = metadata
+    current_metadata = dict(sample.metadata or {})
+    current_metadata.update(
+        {
+            "rm_rubric_scores": values,
+            "rm_model": config.model,
+            "rm_reward": reward,
+        }
+    )
+    sample.metadata = current_metadata
     return reward
 
 
