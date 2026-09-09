@@ -47,6 +47,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     learning_rate: float = 3e-6
     save_interval: int = 32
     objective: str = "wer_grpo"
+    reward_components: str = "wer=1.0"
+    sim_url: str = ""
+    rm_url: str = ""
+    rm_model: str = "qwen3-omni-30b-a3b-thinker"
+    rm_tokenizer_path: str = (
+        "/inspire/qb-ilm2/project/cq-scientific-cooperation-zone/public/kyu/models/AnyAudio-Judge-30B"
+    )
+    reward_candidate_dir: str = "/tmp/moss-tts-local-sim"
     teachers: str = ""
     student_score_endpoint: str = ""
     teacher_default_domain: str = "speech"
@@ -79,7 +87,11 @@ def execute(args: ScriptArgs):
         f"--sglang-server-concurrency {args.rollout_concurrency} "
     )
     if args.objective == "wer_grpo":
-        rollout += "--custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func "
+        if args.reward_components.strip() == "wer=1.0":
+            rollout += "--custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func "
+        else:
+            rollout += "--custom-rm-path miles.policies.moss_tts_local.reward_composite.reward_func "
+            rollout += f"--moss-local-reward-components {shlex.quote(args.reward_components)} "
     elif args.objective == "mopd":
         if not args.teachers or not args.student_score_endpoint:
             raise ValueError(
@@ -112,24 +124,36 @@ def execute(args: ScriptArgs):
         "--no-gradient-accumulation-fusion --no-masked-softmax-fusion "
         "--log-interval 1 --use-tensorboard "
     )
+    environment = {
+        "TENSORBOARD_DIR": args.output_dir + "/tensorboard",
+        "NCCL_CUMEM_ENABLE": "0",
+        "NCCL_NVLS_ENABLE": "0",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "MOSS_TTS_WER_ASR_URL": args.asr_url,
+        "MOSS_TTS_WER_ASR_API_KEY_ENV": "INSPIRE_API_KEY",
+        "MOSS_TTS_WER_ASR_API_KEY_FILE": args.asr_key_file,
+        "MOSS_TTS_WER_ASR_MODEL": "qwen3-asr-1.7b",
+        "MOSS_TTS_WER_ASR_REPEATS": "3",
+    }
+    if args.reward_components.strip() != "wer=1.0":
+        environment.update(
+            {
+                "MOSS_TTS_REWARD_COMPONENTS": args.reward_components,
+                "MOSS_TTS_SIM_URL": args.sim_url,
+                "MOSS_TTS_RM_URL": args.rm_url,
+                "MOSS_TTS_RM_MODEL": args.rm_model,
+                "MOSS_TTS_RM_TOKENIZER_PATH": args.rm_tokenizer_path,
+                "MOSS_TTS_SIM_CANDIDATE_DIR": args.reward_candidate_dir,
+            }
+        )
     U.execute_train(
         checkpoint + rollout + training + U.get_default_wandb_args(__file__, run_id=args.run_id) + args.extra_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="moss-tts-local",
         megatron_path=args.megatron_path,
         config=args,
-        extra_env_vars={
-            "TENSORBOARD_DIR": args.output_dir + "/tensorboard",
-            "NCCL_CUMEM_ENABLE": "0",
-            "NCCL_NVLS_ENABLE": "0",
-            "HF_HUB_OFFLINE": "1",
-            "TRANSFORMERS_OFFLINE": "1",
-            "MOSS_TTS_WER_ASR_URL": args.asr_url,
-            "MOSS_TTS_WER_ASR_API_KEY_ENV": "INSPIRE_API_KEY",
-            "MOSS_TTS_WER_ASR_API_KEY_FILE": args.asr_key_file,
-            "MOSS_TTS_WER_ASR_MODEL": "qwen3-asr-1.7b",
-            "MOSS_TTS_WER_ASR_REPEATS": "3",
-        },
+        extra_env_vars=environment,
     )
 
 

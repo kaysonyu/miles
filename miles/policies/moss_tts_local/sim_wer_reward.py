@@ -163,8 +163,23 @@ def _read_env_value(path: Path, name: str) -> str:
 def _reference_audio_path(sample: Sample) -> Path:
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     value = metadata.get("reference_audio_path")
+    if value is None:
+        references = metadata.get("reference_audios")
+        if isinstance(references, list):
+            matches = [
+                item.get("path")
+                for item in references
+                if isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+                and "timbre" in item.get("uses", [])
+            ]
+            if len(matches) == 1:
+                value = matches[0]
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("MOSS-TTS SIM reward requires metadata.reference_audio_path.")
+        raise ValueError(
+            "MOSS-TTS SIM reward requires metadata.reference_audio_path or one "
+            "reference_audios item with the timbre use."
+        )
     path = Path(value)
     if not path.is_absolute():
         raise ValueError("MOSS-TTS SIM reference audio path must be absolute.")

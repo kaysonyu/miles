@@ -3,6 +3,7 @@
 import argparse
 
 from miles.policies.moss_tts_local.async_policy import validate_configuration
+from miles.policies.moss_tts_local.reward_composite import parse_components
 
 
 def add_arguments(parser):
@@ -31,6 +32,11 @@ def add_arguments(parser):
     group.add_argument("--use-torch-adam", action=argparse.BooleanOptionalAction, default=False)
     group.add_argument("--custom-pretrained-checkpoint-loader-path")
     group.add_argument("--moss-local-objective", choices=["wer_grpo", "mopd"], default="wer_grpo")
+    group.add_argument(
+        "--moss-local-reward-components",
+        default="wer=1.0",
+        help="Opt-in composite reward, e.g. 'wer=0.4 sim=0.4 rm=0.2'.",
+    )
     group.add_argument("--moss-local-mopd-teachers", nargs="+")
     group.add_argument("--moss-local-student-score-endpoint")
     group.add_argument("--moss-local-mopd-default-domain", default=None)
@@ -50,6 +56,7 @@ def validate_args(args):
         raise ValueError("--max-samples-per-microbatch requires a positive value and dynamic batching")
     if args.policy_family != "moss_tts_local":
         return
+    parse_components(args.moss_local_reward_components)
     validate_configuration(args)
     if args.train_backend != "megatron" or args.rollout_backend != "sglang_omni":
         raise ValueError("MOSS requires Megatron training and --rollout-backend=sglang_omni")

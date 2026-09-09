@@ -265,6 +265,19 @@ def _wer_rollout_metrics(groups: list[list[Sample]]) -> dict[str, float]:
                 "moss_tts_local/sim_scored_samples": float(len(similarities)),
             }
         )
+    for component_name, metadata_key in (
+        ("rm", "rm_reward"),
+        ("composite", "reward"),
+    ):
+        values = [
+            float(sample.metadata[metadata_key])
+            for group in groups
+            for sample in group
+            if isinstance((sample.metadata or {}).get(metadata_key), (int, float))
+        ]
+        if values:
+            metrics[f"moss_tts_local/{component_name}_mean"] = sum(values) / len(values)
+            metrics[f"moss_tts_local/{component_name}_scored_samples"] = float(len(values))
     return metrics
 
 
