@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from miles.policies.registry import policy_for_args
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -60,7 +61,11 @@ class RolloutDataSource(DataSource):
             tokenizer = load_tokenizer(
                 args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
             )
-            processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+            processor = (
+                None
+                if not policy_for_args(args).uses_processor
+                else load_processor(args.hf_checkpoint, trust_remote_code=True)
+            )
 
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:

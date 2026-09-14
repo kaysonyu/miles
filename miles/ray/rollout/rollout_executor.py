@@ -5,6 +5,7 @@ import time
 import ray
 
 from miles.dashboard import hooks as dashboard_hooks
+from miles.policies.registry import policy_for_args
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
@@ -102,6 +103,8 @@ class RolloutExecutor:
     # TODO: may have a `async def init` here later
 
     def dispose(self):
+        if (adapter := policy_for_args(self.args).rollout_adapter) is not None:
+            adapter.dispose()
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -114,6 +117,8 @@ class RolloutExecutor:
 
     async def get(self, rollout_id):
         start_time = time.time()
+        if getattr(self.args, "moss_local_async", False):
+            logger.info("MOSS async rollout start: rollout=%d timestamp=%.6f", rollout_id, start_time)
         self.rollout_id = rollout_id
         self._rollouts_since_weight_version_publish += 1
         assert_weight_version_is_published(
@@ -123,6 +128,8 @@ class RolloutExecutor:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
             data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        if getattr(self.args, "moss_local_async", False):
+            logger.info("MOSS async rollout end: rollout=%d timestamp=%.6f", rollout_id, time.time())
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(

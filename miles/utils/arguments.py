@@ -10,6 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.policies.registry import policy_for_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -2669,6 +2670,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
+        from miles.policies.moss_tts_local.arguments import add_arguments as add_moss_arguments
+
+        parser = add_moss_arguments(parser)
         parser = add_run_uuid_arguments(parser)
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
@@ -2926,6 +2930,9 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    from miles.policies.moss_tts_local.arguments import validate_args as validate_moss_args
+
+    validate_moss_args(args)
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3703,6 +3710,13 @@ def validate_async_off_policy_correction(args) -> None:
     advantages) to a policy that never generated the trajectory; the recorded
     ``weight_versions`` are a metric, not an enforcement mechanism.
     """
+    if getattr(args, "policy_family", "text") == "moss_tts_local":
+        from miles.policies.moss_tts_local.async_policy import validate_configuration
+
+        if not getattr(args, "moss_local_async", False):
+            raise ValueError("Local train_async.py requires explicit --moss-local-async")
+        validate_configuration(args)
+        return
     if not args.use_critic:
         return
     assert args.use_rollout_logprobs or args.use_tis or args.keep_old_actor, (
@@ -3759,6 +3773,9 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
 
 
 def hf_validate_args(args, hf_config):
+    if not policy_for_args(args).uses_hf_config_validation:
+        return
+
     def equal(x, y):
         return x == y
 

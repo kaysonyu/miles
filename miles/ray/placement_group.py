@@ -171,7 +171,12 @@ class RolloutComponents(NamedTuple):
 
 
 async def create_rollout_components(args) -> RolloutComponents:
-    inference_controller = InferenceController(args)
+    if getattr(args, "rollout_backend", "sglang") == "sglang_omni":
+        from miles.backends.sglang_omni_utils.controller import OmniInferenceController
+
+        inference_controller = OmniInferenceController(args)
+    else:
+        inference_controller = InferenceController(args)
     await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(

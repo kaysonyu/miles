@@ -1,0 +1,182 @@
+"""MOSS-TTS Local sample conversion and DP partitioning."""
+
+from __future__ import annotations
+
+from argparse import Namespace
+from collections.abc import Callable
+
+
+from miles.policies.moss_tts_local.data_schema import prepare_shard, tensorize_shard
+from miles.policies.moss_tts_local.provenance import SampleProvenance, validate_sample_version
+from miles.policies.moss_tts_local.types import MossTTSLocalTrajectoryV2
+from miles.utils.dp_schedule import build_dp_schedule
+from miles.utils.types import RolloutBatch, Sample
+
+
+def _validated_trajectories(samples: list[Sample]) -> list[MossTTSLocalTrajectoryV2]:
+    trajectories: list[MossTTSLocalTrajectoryV2] = []
+    for sample_index, sample in enumerate(samples):
+        trajectory = sample.structured_trajectory
+        if not isinstance(trajectory, MossTTSLocalTrajectoryV2):
+            raise TypeError(f"MOSS-TTS Local sample {sample_index} is missing a MossTTSLocalTrajectoryV2.")
+        trajectory.validate()
+        if sample.status not in (Sample.Status.COMPLETED, Sample.Status.TRUNCATED):
+            raise ValueError(f"MOSS-TTS Local sample {sample_index} has non-trainable status {sample.status.value!r}.")
+        expected_status = Sample.Status.COMPLETED if trajectory.finish_reason == "stop" else Sample.Status.TRUNCATED
+        if sample.status != expected_status:
+            raise ValueError(
+                f"MOSS-TTS Local sample {sample_index} finish/status mismatch: "
+                f"finish_reason={trajectory.finish_reason!r}, status={sample.status.value!r}."
+            )
+        trajectories.append(trajectory)
+    return trajectories
+
+
+class MossTTSLocalRolloutDataAdapter:
+    """Own the structured trajectory-to-training representation."""
+
+    preserve_partition = True
+    prepare_rollout_data = staticmethod(prepare_shard)
+    validate_sample_version = staticmethod(validate_sample_version)
+
+    def split_by_dp(self, args, data, train_parallel_config):
+        return split_raw(args, data, train_parallel_config)
+
+    def dispose(self) -> None:
+        from miles.policies.moss_tts_local.rollout import dispose_rollout_state
+
+        dispose_rollout_state()
+
+    def samples_to_train_data(
+        self,
+        args: Namespace,
+        samples: list[Sample],
+        *,
+        reward_postprocess: Callable[[list[Sample]], tuple[list[float], list[float]]],
+    ) -> RolloutBatch:
+        if not samples:
+            raise ValueError("MOSS-TTS Local rollout conversion requires at least one sample.")
+        if getattr(args, "custom_convert_samples_to_train_data_path", None) is not None:
+            raise ValueError(
+                "MOSS-TTS Local owns structured rollout conversion; "
+                "--custom-convert-samples-to-train-data-path is not supported."
+            )
+
+        trajectories = _validated_trajectories(samples)
+
+        provenance = [SampleProvenance.from_sample(sample) for sample in samples]
+        has_replay = any(item.origin == "teacher_replay" for item in provenance)
+        if has_replay:
+            if not getattr(args, "moss_local_replay_manifest", None) or getattr(
+                args, "moss_local_mopd_estimator", "sampled"
+            ) not in {"dense_reverse", "dense_forward"}:
+                raise ValueError("Teacher-origin trajectories require explicitly enabled native mixed distillation")
+            for item in provenance:
+                if item.student_scoring_version != item.training_version:
+                    raise ValueError(
+                        "Mixed replay requires matching student scoring and behavior versions for every sample"
+                    )
+        training_versions = [item.training_version for item in provenance]
+        if len(set(training_versions)) != 1:
+            raise ValueError("MOSS training batches must not mix generating weight versions")
+        raw_rewards, rewards = reward_postprocess(samples)
+        if len(raw_rewards) != len(samples) or len(rewards) != len(samples):
+            raise ValueError("Reward post-processing must return one raw and normalized reward per sample.")
+        rollout_ids = [sample.rollout_id if sample.rollout_id is not None else sample.index for sample in samples]
+
+        decision_masks = []
+        code_masks = []
+        for sample, trajectory in zip(samples, trajectories, strict=True):
+            decision_mask = trajectory.decision_mask.clone()
+            code_mask = trajectory.code_mask.clone()
+            if sample.remove_sample:
+                decision_mask.zero_()
+                code_mask.zero_()
+            decision_masks.append(decision_mask)
+            code_masks.append(code_mask)
+
+        event_mask_sums_per_sample = [int(mask.sum().item()) for mask in decision_masks]
+        rollout_total_events: dict[int, int] = {}
+        for rollout_id, event_count in zip(rollout_ids, event_mask_sums_per_sample, strict=True):
+            rollout_total_events[rollout_id] = rollout_total_events.get(rollout_id, 0) + event_count
+
+        train_data: RolloutBatch = {
+            "prompt_rows": [trajectory.prompt_rows for trajectory in trajectories],
+            "decisions": [trajectory.decisions for trajectory in trajectories],
+            "decision_masks": decision_masks,
+            "codes": [trajectory.codes for trajectory in trajectories],
+            "code_masks": code_masks,
+            "rollout_decision_logprobs": [trajectory.decision_logprobs for trajectory in trajectories],
+            "rollout_code_logprobs": [trajectory.code_logprobs for trajectory in trajectories],
+            "prompt_lengths": [int(trajectory.prompt_rows.shape[0]) for trajectory in trajectories],
+            "frame_lengths": [trajectory.num_frames for trajectory in trajectories],
+            "decision_lengths": [trajectory.num_decisions for trajectory in trajectories],
+            "total_lengths": [
+                int(trajectory.prompt_rows.shape[0]) + trajectory.num_frames for trajectory in trajectories
+            ],
+            "action_counts": [trajectory.num_actions for trajectory in trajectories],
+            "event_counts": event_mask_sums_per_sample,
+            "rollout_event_mask_sums": [rollout_total_events[rollout_id] for rollout_id in rollout_ids],
+            # Native mixed GKD checks freshness of the student that scored the
+            # batch. True teacher behavior versions remain on each trajectory
+            # and in the explicit provenance fields below.
+            "weight_versions": training_versions,
+            "rewards": rewards,
+            "raw_reward": raw_rewards,
+            "truncated": [1 if trajectory.finish_reason == "length" else 0 for trajectory in trajectories],
+            "sample_indices": [sample.index for sample in samples],
+            "rollout_ids": rollout_ids,
+            "source_names": [(sample.metadata or {}).get("source_name", "unknown") for sample in samples],
+        }
+        if getattr(args, "moss_local_replay_manifest", None):
+            train_data["trajectory_origins"] = [item.origin for item in provenance]
+            train_data["behavior_weight_versions"] = [item.behavior_version for item in provenance]
+            train_data["student_scoring_versions"] = [item.student_scoring_version for item in provenance]
+            train_data["replay_ids"] = [item.replay_id for item in provenance]
+        if any(sample.metadata and "raw_reward" in sample.metadata for sample in samples):
+            train_data["raw_reward"] = [
+                sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else sample.reward
+                for sample in samples
+            ]
+        if getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
+            scores = [sample.metadata["mopd_scores"] for sample in samples]
+            train_data["teacher_decision_logprobs"] = [score["decision_logprobs"] for score in scores]
+            train_data["teacher_code_logprobs"] = [score["code_logprobs"] for score in scores]
+            train_data["student_prefill_decision_logprobs"] = [
+                score["student_score"]["decision_logprobs"] for score in scores
+            ]
+            train_data["student_prefill_code_logprobs"] = [score["student_score"]["code_logprobs"] for score in scores]
+            train_data["teacher_weight_digests"] = [score["teacher_weight_sha256"] for score in scores]
+            train_data["teacher_versions"] = [str(score["weight_version"]) for score in scores]
+            train_data["teacher_domains"] = [sample.metadata["mopd_teacher"] for sample in samples]
+        return train_data
+
+
+def split_raw(args, data, train_parallel_config):
+    """Schedule structured samples, preserving their real global sequence lengths."""
+    lengths = [int(value) for value in data["total_lengths"]]
+    partitions, micro_batches, microbatch_counts, rollout_counts = build_dp_schedule(
+        args,
+        train_parallel_config,
+        lengths,
+        global_batch_size=args.global_batch_size,
+        rollout_indices=data["rollout_ids"],
+    )
+    result = []
+    for rank, partition in enumerate(partitions):
+        shard = {
+            key: [values[index] for index in partition]
+            for key, values in data.items()
+            if key not in {"total_lengths", "raw_reward"}
+        }
+        shard.update(
+            partition=list(partition),
+            total_lengths=lengths,
+            raw_reward=data["raw_reward"],
+            micro_batch_indices=micro_batches[rank],
+            num_microbatches=microbatch_counts,
+            num_rollouts=rollout_counts,
+        )
+        tensorize_shard(shard)
+        result.append(shard)
+    return result

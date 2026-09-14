@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.policies.registry import policy_for_args
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
@@ -46,6 +47,11 @@ def get_rollout_data(
         parallel_state.effective_dp.size,
         witness_info=witness_info,
     )
+    if (adapter := policy_for_args(args).rollout_adapter) is not None:
+        return (
+            adapter.prepare_rollout_data(rollout_data, device=torch.cuda.current_device()),
+            store_get_result,
+        )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
         torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]

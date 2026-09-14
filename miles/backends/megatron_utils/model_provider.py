@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.policies.registry import policy_for_args
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -268,6 +269,17 @@ def get_model_provider_func(
                         use_kitchen_attention=config.use_kitchen_attention,
                         kitchen_attention_backend=config.kitchen_attention_backend,
                     )
+
+        if (model_path := policy_for_args(args).model_path) is not None:
+            assert role == "actor", "Structured policies only support the actor role"
+            return load_function(model_path)(
+                config=config,
+                transformer_layer_spec=transformer_layer_spec,
+                args=args,
+                pre_process=pre_process,
+                post_process=post_process,
+                vp_stage=vp_stage,
+            )
 
         build_model_context = nullcontext
         build_model_context_args = {}

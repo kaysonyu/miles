@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from miles.policies.registry import policy_for_args
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -59,6 +60,17 @@ def convert_samples_to_train_data(
     """
     Convert inference generated samples to training data.
     """
+    if (adapter := policy_for_args(args).rollout_adapter) is not None:
+        return adapter.samples_to_train_data(
+            args,
+            samples,
+            reward_postprocess=lambda items: _post_process_rewards(
+                args,
+                items,
+                custom_reward_post_process_func=custom_reward_post_process_func,
+                prompt_group_sizes=metadata.get("prompt_group_sizes"),
+            ),
+        )
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
@@ -298,7 +310,9 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
     the legacy split (the training side schedules locally)."""
-    if can_schedule_on_rollout_side(args, data, train_parallel_config):
+    if (adapter := policy_for_args(args).rollout_adapter) is not None:
+        shards = adapter.split_by_dp(args, data, train_parallel_config)
+    elif can_schedule_on_rollout_side(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
@@ -424,7 +438,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
 def process_rollout_data_shard(args, rollout_data):
     """Train-side completion of the DP split: drop the ``partition`` key and
     reorder the batch-global ``total_lengths`` into this shard's row order."""
-    partition = rollout_data.pop("partition")
+    adapter = policy_for_args(args).rollout_adapter
+    partition = rollout_data["partition"] if adapter and adapter.preserve_partition else rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
 
     # save the seqlen of the whole rollout batch

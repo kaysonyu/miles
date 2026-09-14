@@ -68,6 +68,10 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    if getattr(args, "rollout_backend", "sglang") == "sglang_omni":
+        from miles.backends.sglang_omni_utils.weight_transfer import OmniWeightTransfer
+
+        return OmniWeightTransfer(args)
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 

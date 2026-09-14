@@ -2,6 +2,7 @@ import re
 from argparse import Namespace
 from typing import TYPE_CHECKING
 
+from miles.policies.registry import policy_for_args
 from miles.utils.lora import is_lora_enabled
 
 if TYPE_CHECKING:
@@ -35,6 +36,10 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"])
         return
 
     for sample in samples:
+        if sample.structured_trajectory is not None:
+            adapter = policy_for_args(args).rollout_adapter
+            assert adapter is not None, "Structured trajectories require a matching policy adapter"
+            adapter.validate_sample_version(args, sample)
         for span in sample.all_weight_version_spans:
             assert span.version != SGLANG_DEFAULT_WEIGHT_VERSION, (
                 f"sample index={sample.index} tokens [{span.abs_start}, {span.abs_end}) were generated under "

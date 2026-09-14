@@ -11,6 +11,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.policies.registry import policy_for_args
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
@@ -67,6 +68,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         return export_inkling_lora_hf_named(self.model)
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
+        if (adapter := policy_for_args(self.args).weight_adapter) is not None:
+            for name, param in named_params:
+                yield adapter.convert_parameter(self.args, self.model_name, name, param, self.quantization_config)
+            return
         for name, param in named_params:
             yield list(convert_to_hf(self.args, self.model_name, name, param, self.quantization_config))
 

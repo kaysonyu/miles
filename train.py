@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
+    assert not getattr(args, "moss_local_async", False), "--moss-local-async requires train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     _worker_manager = launch_worker_manager(args)
@@ -101,7 +103,9 @@ async def train(args):
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
+    loop_started = time.perf_counter()
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
+        iteration_started = time.perf_counter()
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
@@ -158,6 +162,9 @@ async def train(args):
             await inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
 
+        if getattr(args, "policy_family", "text") == "moss_tts_local":
+            logger.info("MOSS sync iteration %d: seconds=%.6f", rollout_id, time.perf_counter() - iteration_started)
+
         if (
             args.debug_exit_after_rollout is not None
             and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
@@ -169,6 +176,8 @@ async def train(args):
             )
             break
 
+    if getattr(args, "policy_family", "text") == "moss_tts_local":
+        logger.info("MOSS sync loop complete: seconds=%.6f", time.perf_counter() - loop_started)
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()
     await actor_model.dispose()

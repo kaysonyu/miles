@@ -12,6 +12,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.policies.registry import policy_for_args
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
@@ -105,6 +106,17 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
 
+    if getattr(args, "custom_pretrained_checkpoint_loader_path", None) and args.pretrained_checkpoint:
+        from miles.backends.megatron_utils.pretrained_loader import has_resume_checkpoint, load_pretrained
+
+        if not has_resume_checkpoint(args.load):
+            return load_pretrained(
+                args,
+                ddp_model,
+                optimizer,
+                checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     load_path = args.load
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
@@ -118,6 +130,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
+        policy_for_args(args).validate_resume(args)
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,

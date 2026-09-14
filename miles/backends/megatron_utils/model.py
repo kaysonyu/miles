@@ -28,6 +28,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.megatron_utils.optimizer_adapters import torch_adam_context
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -202,11 +203,12 @@ def setup_model_and_optimizer(
 
         optimizer = build_multi_lora_optimizer(args, config, model)
     else:
-        optimizer = get_megatron_optimizer(
-            config=config,
-            model_chunks=model,
-            use_gloo_process_groups=args.use_gloo_process_groups,
-        )
+        with torch_adam_context(getattr(args, "use_torch_adam", False)):
+            optimizer = get_megatron_optimizer(
+                config=config,
+                model_chunks=model,
+                use_gloo_process_groups=args.use_gloo_process_groups,
+            )
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.
@@ -266,6 +268,7 @@ def forward_only(
     rollout_id: int,
     store_prefix: str = "",
     fp32_output: bool = True,
+    custom_forward_step: Callable | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -381,7 +384,7 @@ def forward_only(
     for step_id in range(num_steps_per_rollout):
         # collect_non_loss_data
         forward_data_store += forward_backward_func(
-            forward_step_func=forward_step,
+            forward_step_func=custom_forward_step or forward_step,
             data_iterator=data_iterator,
             model=model,
             num_microbatches=num_microbatches[step_id],
@@ -426,6 +429,7 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    custom_forward_step_builder: Callable | None = None,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -567,7 +571,11 @@ def train_one_step(
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
-        forward_step_func=forward_step,
+        forward_step_func=(
+            custom_forward_step_builder(args, num_microbatches, num_rollouts)
+            if custom_forward_step_builder is not None
+            else forward_step
+        ),
         data_iterator=data_iterator,
         model=model,
         num_microbatches=num_microbatches,
@@ -691,6 +699,7 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    custom_forward_step_builder: Callable | None = None,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -790,6 +799,7 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            custom_forward_step_builder=custom_forward_step_builder,
         )
 
         if step_id == 0:
@@ -949,7 +959,11 @@ def initialize_model_and_optimizer(
 
     load_dir = getattr(args, "load", None)
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
-    if load_dir is None or _has_loadable_ckpt(load_dir):
+    if (
+        load_dir is None
+        or _has_loadable_ckpt(load_dir)
+        or getattr(args, "custom_pretrained_checkpoint_loader_path", None)
+    ):
         with load_ctx:
             iteration, _ = load_checkpoint(
                 model,
