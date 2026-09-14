@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from miles.backends.sglang_omni_utils.http_adapter import SGLangOmniHttpAdapter
-from miles.policies.moss_tts_local.trace_codec import decode_moss_tts_local_trace
 from miles.policies.moss_tts_local.teacher_replay import FrozenTeacherReplay
+from miles.policies.moss_tts_local.trace_codec import decode_moss_tts_local_trace
 from miles.policies.moss_tts_local.types import MediaArtifact
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.rm_hub import async_rm, batched_async_rm
@@ -269,7 +269,10 @@ def _wer_rollout_metrics(groups: list[list[Sample]]) -> dict[str, float]:
     ]
     if similarity_scored:
         similarities = [float(sample.metadata["sim_reward"]) for sample in similarity_scored]
-        mixed_rewards = [float(sample.metadata["mixed_reward"]) for sample in similarity_scored]
+        mixed_rewards = [
+            float(sample.metadata["reward"] if "reward" in sample.metadata else sample.metadata["mixed_reward"])
+            for sample in similarity_scored
+        ]
         metrics.update(
             {
                 "moss_tts_local/sim_mean": sum(similarities) / len(similarities),

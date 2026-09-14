@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.policies.moss_tts_local.reward_components import is_plain_wer, parse_components
 
 
 @dataclass
@@ -61,6 +62,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     resume: bool = False
     extra_args: str = ""
 
+    @property
+    def uses_composite_reward(self) -> bool:
+        return not is_plain_wer(parse_components(self.reward_components))
+
 
 def execute(args: ScriptArgs):
     q = shlex.quote
@@ -87,7 +92,7 @@ def execute(args: ScriptArgs):
         f"--sglang-server-concurrency {args.rollout_concurrency} "
     )
     if args.objective == "wer_grpo":
-        if args.reward_components.strip() == "wer=1.0":
+        if not args.uses_composite_reward:
             rollout += "--custom-rm-path miles.policies.moss_tts_local.wer_reward.reward_func "
         else:
             rollout += "--custom-rm-path miles.policies.moss_tts_local.reward_composite.reward_func "
@@ -136,7 +141,7 @@ def execute(args: ScriptArgs):
         "MOSS_TTS_WER_ASR_MODEL": "qwen3-asr-1.7b",
         "MOSS_TTS_WER_ASR_REPEATS": "3",
     }
-    if args.reward_components.strip() != "wer=1.0":
+    if args.uses_composite_reward:
         environment.update(
             {
                 "MOSS_TTS_REWARD_COMPONENTS": args.reward_components,

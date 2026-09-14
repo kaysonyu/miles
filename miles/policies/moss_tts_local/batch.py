@@ -8,20 +8,11 @@ from typing import Any
 import torch
 from megatron.core.packed_seq_params import PackedSeqParams
 
+from miles.policies.moss_tts_local.data_schema import BATCH_KEYS
+from miles.policies.moss_tts_local.selected_logprob import join_moss_action_logprobs
 from miles.policies.moss_tts_local.spec import MOSS_TTS_LOCAL_SPEC
 
-MOSS_TTS_LOCAL_BATCH_KEYS = (
-    "prompt_rows",
-    "decisions",
-    "decision_masks",
-    "codes",
-    "code_masks",
-    "rollout_decision_logprobs",
-    "rollout_code_logprobs",
-    "rewards",
-    "rollout_ids",
-    "weight_versions",
-)
+MOSS_TTS_LOCAL_BATCH_KEYS = BATCH_KEYS
 
 
 @dataclass
@@ -50,23 +41,13 @@ class MossTTSLocalPolicyBatch:
         return int(self.decision_offsets.numel() - 1)
 
     def server_joint_logprobs(self) -> torch.Tensor:
-        joint = self.rollout_decision_logprobs.clone()
-        if self.batch_size == 1:
-            num_frames = int(self.rollout_code_logprobs.shape[0])
-            if num_frames:
-                joint[:num_frames] += (self.rollout_code_logprobs * self.code_mask).sum(dim=-1)
-            return joint
-        for batch_index in range(self.batch_size):
-            decision_start = int(self.decision_offsets[batch_index])
-            frame_start = int(self.frame_offsets[batch_index])
-            frame_end = int(self.frame_offsets[batch_index + 1])
-            num_frames = frame_end - frame_start
-            if num_frames:
-                code_joint = (
-                    self.rollout_code_logprobs[frame_start:frame_end] * self.code_mask[frame_start:frame_end]
-                ).sum(dim=-1)
-                joint[decision_start : decision_start + num_frames] += code_joint
-        return joint
+        return join_moss_action_logprobs(
+            self.rollout_decision_logprobs,
+            self.rollout_code_logprobs,
+            decision_offsets=self.decision_offsets,
+            frame_offsets=self.frame_offsets,
+            code_mask=self.code_mask,
+        )
 
 
 def _require_list(raw_batch: dict[str, Any], key: str) -> list[Any]:

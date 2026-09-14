@@ -14,6 +14,7 @@ _DEBUG_PER_SAMPLE_KEYS = (
     "weight_versions",
     "trajectory_origins",
     "behavior_weight_versions",
+    "student_scoring_versions",
     "replay_ids",
     "policy_lags",
     "behavior_snapshot_versions",

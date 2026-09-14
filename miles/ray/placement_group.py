@@ -171,7 +171,7 @@ class RolloutComponents(NamedTuple):
 
 
 async def create_rollout_components(args) -> RolloutComponents:
-    if getattr(args, "policy_family", "text") == "moss_tts_local":
+    if getattr(args, "rollout_backend", "sglang") == "sglang_omni":
         from miles.backends.sglang_omni_utils.controller import OmniInferenceController
 
         inference_controller = OmniInferenceController(args)

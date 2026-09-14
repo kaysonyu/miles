@@ -5,6 +5,7 @@ import time
 import ray
 
 from miles.dashboard import hooks as dashboard_hooks
+from miles.policies.registry import policy_for_args
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
@@ -102,9 +103,8 @@ class RolloutExecutor:
     # TODO: may have a `async def init` here later
 
     def dispose(self):
-        if getattr(self.args, "policy_family", "text") == "moss_tts_local":
-            from miles.policies.moss_tts_local.rollout import dispose_rollout_state
-            dispose_rollout_state()
+        if (adapter := policy_for_args(self.args).rollout_adapter) is not None:
+            adapter.dispose()
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)

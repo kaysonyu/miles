@@ -8,7 +8,9 @@ MOSS-TTS Local 的奖励入口支持把 WER、参考音频相似度（SIM）和�
 --moss-local-reward-components wer=1.0
 ```
 
-launcher 在这个默认值下继续加载 `miles.policies.moss_tts_local.wer_reward.reward_func`。只有显式配置多个组件时才加载 `miles.policies.moss_tts_local.reward_composite.reward_func`，因此原来的纯 WER 命令、数据格式和 ASR 服务不需要修改。
+launcher 按解析后的组件值选择入口：`wer=1.0`、`wer=1`、`wer=1,sim=0` 都加载 `miles.policies.moss_tts_local.wer_reward.reward_func`，保留 `1-WER` 可为负的原始语义。其他配置加载 `miles.policies.moss_tts_local.reward_composite.reward_func`，将各组件奖励截到 `[0, 1]` 后加权。直接调用 composite 入口也使用有界语义。
+
+组合评分并发计算 WER/SIM/RM，全部结果验证通过后才统一写入样本诊断；任一评分失败不会留下部分组合结果。SIM 指标兼容新 composite 的 `reward` 和旧固定组合的 `mixed_reward` 字段。
 
 ## 组件和公式
 

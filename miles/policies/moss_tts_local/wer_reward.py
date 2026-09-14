@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from miles.policies.moss_tts_local.reward_components import RewardScore
 from miles.policies.moss_tts_local.types import MediaArtifact
 from miles.utils.types import Sample
 
@@ -75,7 +76,7 @@ class ASRConfig:
     repeats: int = 1
 
     @classmethod
-    def from_env(cls) -> "ASRConfig":
+    def from_env(cls) -> ASRConfig:
         url = os.getenv("MOSS_TTS_WER_ASR_URL", "").strip()
         if not url:
             raise ValueError("MOSS_TTS_WER_ASR_URL must name the Qwen3-ASR OpenAI-compatible endpoint.")
@@ -535,8 +536,8 @@ def _score_transcription(
     )
 
 
-async def reward_func(args, sample: Sample, **kwargs) -> float:
-    """Miles entry point for cap-independent effective English WER reward.
+async def score_sample(args, sample: Sample, **kwargs) -> RewardScore:
+    """Score cap-independent effective English WER without changing the sample.
 
     Raw transcript WER remains in ``wer_raw``.  Explicit non-English language,
     decoder length truncation, and physically implausible transcript word rate
@@ -578,9 +579,9 @@ async def reward_func(args, sample: Sample, **kwargs) -> float:
         )
         > 1
     )
-    sample.metadata = dict(sample.metadata or {})
-    sample.metadata.update(
-        {
+    return RewardScore(
+        value=score.reward,
+        metadata={
             "asr_language": transcription.language,
             "asr_transcript": transcription.transcript,
             "asr_finish_reason": transcription.finish_reason,
@@ -600,6 +601,12 @@ async def reward_func(args, sample: Sample, **kwargs) -> float:
             "wer_effective_reason": selected.effective_reason,
             "wer_details": {**score.to_dict(), "effective_reason": selected.effective_reason},
             "wer_raw_details": raw_score.to_dict(),
-        }
+        },
     )
-    return score.reward
+
+
+async def reward_func(args, sample: Sample, **kwargs) -> float:
+    """Compatibility entrypoint retaining the original unbounded WER reward."""
+    score = await score_sample(args, sample, **kwargs)
+    sample.metadata = dict(sample.metadata or {}) | score.metadata
+    return score.value

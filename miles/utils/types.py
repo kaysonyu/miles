@@ -8,7 +8,8 @@ import torch
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 if TYPE_CHECKING:
-    from miles.policies.moss_tts_local.types import MediaArtifact, MossTTSLocalTrajectoryV2
+    from miles.policies.base import StructuredTrajectory
+    from miles.policies.media import MediaArtifact
 
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
@@ -91,7 +92,7 @@ class Sample:
     multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # Audio-policy trajectories are independent of the text token fields.
-    structured_trajectory: "MossTTSLocalTrajectoryV2 | None" = None
+    structured_trajectory: "StructuredTrajectory | None" = None
     artifacts: list["MediaArtifact"] = field(default_factory=list)
     # response
     response: str = ""
@@ -223,11 +224,12 @@ class Sample:
     def from_dict(data: dict):
         data = dict(data)
         if data.get("structured_trajectory") is not None:
-            from miles.policies.moss_tts_local.types import MossTTSLocalTrajectoryV2
+            from miles.policies.registry import resolve_policy
 
-            data["structured_trajectory"] = MossTTSLocalTrajectoryV2.from_dict(data["structured_trajectory"])
+            trajectory = data["structured_trajectory"]
+            data["structured_trajectory"] = resolve_policy(trajectory["model_family"]).decode_trajectory(trajectory)
         if data.get("artifacts"):
-            from miles.policies.moss_tts_local.types import MediaArtifact
+            from miles.policies.media import MediaArtifact
 
             data["artifacts"] = [MediaArtifact(**item) for item in data["artifacts"]]
         data["status"] = Sample.Status(data["status"])

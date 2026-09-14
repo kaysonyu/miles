@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from miles.policies.registry import policy_for_args
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -62,7 +63,7 @@ class RolloutDataSource(DataSource):
             )
             processor = (
                 None
-                if getattr(args, "policy_family", "text") == "moss_tts_local"
+                if not policy_for_args(args).uses_processor
                 else load_processor(args.hf_checkpoint, trust_remote_code=True)
             )
 

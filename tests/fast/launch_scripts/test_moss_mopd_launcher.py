@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from tests.fast.launch_scripts.py_harness import (
@@ -35,3 +33,15 @@ def test_mopd_launch_configuration(monkeypatch, tmp_path, save_interval):
     )
     assert "--moss-local-student-score-endpoint" in output
     assert "--custom-rm-path" not in output
+
+
+@pytest.mark.parametrize("components", ["wer=1", "wer=1.00", "wer=1,sim=0"])
+def test_equivalent_wer_settings_keep_the_original_launcher_snapshot(monkeypatch, tmp_path, components):
+    freeze_environment(monkeypatch)
+    recording = install_command_recorder(monkeypatch)
+    module = import_launch_script(REPO_ROOT / "scripts/run_moss_tts_local.py")
+    call_entrypoint(module, "execute", {"reward_components": components}, sandbox=tmp_path)
+    output = format_recording(recording, sandbox=tmp_path)
+    assert_matches_snapshot(
+        REPO_ROOT / "tests/snapshots/launch_scripts/py/scripts/run_moss_tts_local.py/execute.txt", output, "execute"
+    )

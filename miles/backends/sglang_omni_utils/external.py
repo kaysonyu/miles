@@ -8,7 +8,7 @@ from argparse import Namespace
 from typing import Any
 
 from miles.backends.sglang_omni_utils.http_adapter import SGLangOmniHttpAdapter, normalize_omni_base_url
-from miles.policies.moss_tts_local.spec import MOSS_TTS_LOCAL_SPEC
+from miles.policies.registry import policy_for_args, resolve_policy
 
 
 @dataclasses.dataclass(frozen=True)
@@ -44,7 +44,12 @@ def discover_external_omni_engines(
     *,
     train_stage: str = "tts_engine",
     admin_api_key: str | None = None,
+    spec=None,
 ) -> list[ExternalOmniEngineInfo]:
+    # Preserve the original standalone Local discovery entrypoint. Controllers
+    # pass the resolved policy contract explicitly.
+    if spec is None:
+        spec = resolve_policy("moss_tts_local").serving_spec
     infos = []
     for endpoint in endpoints:
         base_url = normalize_omni_base_url(endpoint)
@@ -59,18 +64,18 @@ def discover_external_omni_engines(
 
         stage_data = _stage_data(model_info, train_stage)
         identity = stage_data.get("model_identity") or {}
-        MOSS_TTS_LOCAL_SPEC.validate_identity(identity, require_hash=True)
+        spec.validate_identity(identity, require_hash=True)
         schema_versions = stage_data.get("rollout_schema_versions") or []
-        if MOSS_TTS_LOCAL_SPEC.rollout_schema_version not in schema_versions:
+        if spec.rollout_schema_version not in schema_versions:
             raise ValueError(
                 f"SGLang-Omni endpoint {base_url} does not support rollout schema "
-                f"{MOSS_TTS_LOCAL_SPEC.rollout_schema_version}: {schema_versions!r}."
+                f"{spec.rollout_schema_version}: {schema_versions!r}."
             )
         semantics = stage_data.get("logprob_semantics")
-        if semantics != MOSS_TTS_LOCAL_SPEC.logprob_semantics:
+        if semantics != spec.logprob_semantics:
             raise ValueError(
                 f"SGLang-Omni endpoint {base_url} logprob semantics mismatch: "
-                f"expected {MOSS_TTS_LOCAL_SPEC.logprob_semantics!r}, got {semantics!r}."
+                f"expected {spec.logprob_semantics!r}, got {semantics!r}."
             )
         if not bool(stage_data.get("supports_weight_update", False)):
             raise ValueError(f"SGLang-Omni endpoint {base_url} stage {train_stage!r} cannot update weights.")
@@ -120,6 +125,7 @@ def apply_external_omni_info_to_args(args: Namespace, logger=None) -> None:
         endpoints,
         train_stage=train_stage,
         admin_api_key=admin_api_key,
+        spec=policy_for_args(args).serving_spec,
     )
     args.sglang_omni_endpoint_infos = [info.to_dict() for info in infos]
     args.rollout_num_engines = len(infos)

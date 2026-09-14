@@ -10,19 +10,18 @@ configuration error rather than a silent zero.
 from __future__ import annotations
 
 import asyncio
-import base64
 import math
 import os
 import re
-import wave
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any
 
 import aiohttp
 
+from miles.policies.moss_tts_local.reward_components import RewardScore
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
@@ -48,7 +47,7 @@ class RMConfig:
     max_retries: int = 2
 
     @classmethod
-    def from_env(cls) -> "RMConfig":
+    def from_env(cls) -> RMConfig:
         url = os.getenv("MOSS_TTS_RM_URL", os.getenv("MOSS_TTS_JUDGE_URL", "")).strip()
         if not url:
             raise ValueError("MOSS_TTS_RM_URL must be set when the RM component is active.")
@@ -139,7 +138,8 @@ def _audio_data_url(sample: Sample) -> str:
     return f"data:{artifact.mime_type};base64,{artifact.inline_base64}"
 
 
-async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:
+async def score_sample(args: Any, sample: Sample, **kwargs: Any) -> RewardScore:
+    """Evaluate rubric items and return their diagnostics without mutating the sample."""
     del args, kwargs
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     raw_rubric = _parse_rubric(metadata)
@@ -186,20 +186,21 @@ async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:
     async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
         values = await asyncio.gather(*(score_one(item) for item in raw_rubric))
     reward = sum(values) / len(values)
-    metadata = dict(metadata)
-    metadata["rm_rubric_scores"] = values
-    metadata["rm_model"] = config.model
-    metadata["rm_reward"] = reward
-    current_metadata = dict(sample.metadata or {})
-    current_metadata.update(
-        {
+    return RewardScore(
+        value=reward,
+        metadata={
             "rm_rubric_scores": values,
             "rm_model": config.model,
             "rm_reward": reward,
-        }
+        },
     )
-    sample.metadata = current_metadata
-    return reward
+
+
+async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:
+    """Compatibility entrypoint for Miles' scalar reward dispatch."""
+    score = await score_sample(args, sample, **kwargs)
+    sample.metadata = dict(sample.metadata or {}) | score.metadata
+    return score.value
 
 
 def _parse_rubric(metadata: Mapping[str, Any]) -> tuple[dict[str, str], ...]:

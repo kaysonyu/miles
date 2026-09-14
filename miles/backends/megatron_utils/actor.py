@@ -13,8 +13,11 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.megatron_utils.policy_runtime import MegatronPolicyRuntime
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
+from miles.policies.base import TrainingContext
+from miles.policies.registry import policy_for_args
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils
@@ -86,6 +89,9 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 
 
 class MegatronTrainRayActor(TrainRayActor):
+    _policy_workflow = None
+    _policy_runtime = None
+
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
@@ -101,6 +107,9 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        self._policy_workflow = policy_for_args(args).create_workflow() if role == "actor" else None
+        self._policy_runtime = None
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -290,6 +299,17 @@ class MegatronTrainRayActor(TrainRayActor):
             self.rollout_data_postprocess = load_function(x)
 
         self.prof.on_init_end()
+
+        if self._policy_workflow is not None:
+            self._policy_runtime = MegatronPolicyRuntime(
+                weight_updater=self.weight_updater,
+                weights_backuper=self.weights_backuper,
+                switch_model=self._switch_model,
+                profiler=self.prof,
+                backup_required=self._enable_weight_backup,
+                rollout_data_postprocess=self.rollout_data_postprocess,
+                retain_behavior=self._policy_workflow.uses_behavior_snapshots(args),
+            )
 
         return start_rollout_id
 
@@ -500,14 +520,16 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutput:
-        if getattr(self.args, "policy_family", "text") == "moss_tts_local":
-            from miles.policies.base import TrainingContext
-            from miles.policies.moss_tts_local.workflow import MossTTSLocalTrainingWorkflow
-
+        if self._policy_workflow is not None:
             context = TrainingContext(
-                self.args, self.model, self.optimizer, self.opt_param_scheduler, self.weights_backuper, actor=self
+                args=self.args,
+                model=self.model,
+                optimizer=self.optimizer,
+                opt_param_scheduler=self.opt_param_scheduler,
+                runtime=self._policy_runtime,
+                rollout_id=rollout_id,
             )
-            MossTTSLocalTrainingWorkflow().train_actor(context, rollout_id, rollout_data, external_data=external_data)
+            self._policy_workflow.train_actor(context, rollout_id, rollout_data, external_data=external_data)
             self._heartbeat.bump()
             return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         # Create data iterator for log_probs and train.
@@ -861,13 +883,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("rollout_actor")
                 else:
                     self.weights_backuper.backup("old_actor")
-                if (
-                    getattr(self.args, "policy_family", "text") == "moss_tts_local"
-                    and self.args.moss_local_old_policy_source == "trainer_behavior"
-                ):
-                    from miles.policies.moss_tts_local.async_policy import record_snapshot_versions
-
-                    record_snapshot_versions(self, self.weight_updater.weight_version)
+                if self._policy_runtime is not None and self._policy_runtime.on_weights_published():
                     if int(self.weight_updater.weight_version) == 1:
                         sizes = {
                             tag: sum(
@@ -876,7 +892,7 @@ class MegatronTrainRayActor(TrainRayActor):
                             )
                             for tag in ("actor", "old_actor", "rollout_actor")
                         }
-                        logger.info("MOSS CPU snapshot bytes per rank: %s", sizes)
+                        logger.info("Policy CPU snapshot bytes per rank: %s", sizes)
 
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")

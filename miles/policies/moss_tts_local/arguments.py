@@ -5,7 +5,7 @@ import math
 
 from miles.policies.moss_tts_local import domain_distillation
 from miles.policies.moss_tts_local.async_policy import validate_configuration
-from miles.policies.moss_tts_local.reward_composite import parse_components
+from miles.policies.moss_tts_local.reward_components import parse_components
 
 
 def add_arguments(parser):
@@ -64,7 +64,9 @@ def add_arguments(parser):
     group.add_argument("--moss-local-domain-loss-config")
     group.add_argument("--moss-local-mopd-codebook-weights", type=float, nargs=12)
     group.add_argument("--moss-local-mopd-decision-weight", type=float, default=1.0)
-    group.add_argument("--moss-local-replay-manifest", help="Audited frozen-teacher trajectory manifest for mixed GKD.")
+    group.add_argument(
+        "--moss-local-replay-manifest", help="Audited frozen-teacher trajectory manifest for mixed GKD."
+    )
     group.add_argument("--moss-local-replay-every-n-groups", type=int, default=5)
     group.add_argument("--moss-local-replay-mode", choices=["teacher", "prompt_only"], default="teacher")
 
@@ -79,7 +81,10 @@ def validate_args(args):
         return
     domain_specs = domain_distillation.load_specs(getattr(args, "moss_local_domain_loss_config", None))
     args.moss_local_domain_loss_specs = domain_specs
-    if domain_specs and getattr(args, "moss_local_mopd_estimator", "sampled") not in {"dense_reverse", "dense_forward"}:
+    if domain_specs and getattr(args, "moss_local_mopd_estimator", "sampled") not in {
+        "dense_reverse",
+        "dense_forward",
+    }:
         raise ValueError("Per-domain loss settings require native full-distribution MOPD")
     prefix_frames = getattr(args, "moss_local_mopd_prefix_frames", 0)
     prefix_weight = getattr(args, "moss_local_mopd_prefix_weight", 4.0)

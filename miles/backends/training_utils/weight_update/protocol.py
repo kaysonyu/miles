@@ -68,7 +68,7 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    if getattr(args, "policy_family", "text") == "moss_tts_local":
+    if getattr(args, "rollout_backend", "sglang") == "sglang_omni":
         from miles.backends.sglang_omni_utils.weight_transfer import OmniWeightTransfer
 
         return OmniWeightTransfer(args)

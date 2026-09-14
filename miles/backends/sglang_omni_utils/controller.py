@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from miles.backends.sglang_omni_utils.api_client import SGLangOmniApiClient
 from miles.backends.sglang_omni_utils.external import discover_external_omni_engines
+from miles.policies.registry import policy_for_args
 from miles.ray.rollout.inference_controller import InferenceController, UpdatableEngines
 from miles.utils.context_lock import acquires_lock, enforce_lock_discipline, lock_exempt, releases_lock, with_lock
 
@@ -28,6 +29,7 @@ class OmniInferenceController(InferenceController):
             self.args.sglang_omni_endpoints,
             train_stage=self.args.sglang_omni_train_stage,
             admin_api_key=os.getenv(key_env) if key_env else None,
+            spec=policy_for_args(self.args).serving_spec,
         )
         if getattr(self.args, "moss_local_student_score_endpoint", None):
             score_url = urlsplit(self.args.moss_local_student_score_endpoint)
@@ -37,6 +39,7 @@ class OmniInferenceController(InferenceController):
                 [score_base],
                 train_stage=self.args.sglang_omni_train_stage,
                 admin_api_key=os.getenv(key_env) if key_env else None,
+                spec=policy_for_args(self.args).serving_spec,
             )
             self._infos.extend(score_infos)
         self._clients = [SGLangOmniApiClient(info.base_url, info.train_stage, key_env) for info in self._infos]

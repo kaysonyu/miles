@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from miles.backends.megatron_utils.megatron_to_hf.qwen2 import convert_qwen2_to_hf
-
 from miles.policies.moss_tts_local.spec import MOSS_TTS_LOCAL_SPEC
 
 
@@ -20,6 +21,12 @@ def _strip_wrappers(name: str) -> str:
 
 class MossTTSLocalServingWeightAdapter:
     """Export canonical checkpoint names consumed by Omni's model ``load_weights``."""
+
+    def expected_names(self, args) -> set[str] | None:
+        index = Path(args.hf_checkpoint) / "model.safetensors.index.json"
+        if not index.exists():
+            return None
+        return set(json.loads(index.read_text())["weight_map"]) - {"text_lm_head.weight"}
 
     def convert_parameter(
         self,

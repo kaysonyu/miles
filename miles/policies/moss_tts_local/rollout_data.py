@@ -5,44 +5,42 @@ from __future__ import annotations
 from argparse import Namespace
 from collections.abc import Callable
 
-import torch
 
+from miles.policies.moss_tts_local.data_schema import prepare_shard, tensorize_shard
+from miles.policies.moss_tts_local.provenance import SampleProvenance, validate_sample_version
 from miles.policies.moss_tts_local.types import MossTTSLocalTrajectoryV2
 from miles.utils.dp_schedule import build_dp_schedule
 from miles.utils.types import RolloutBatch, Sample
 
-_TENSOR_DTYPES: dict[str, torch.dtype] = {
-    "prompt_rows": torch.long,
-    "decisions": torch.long,
-    "decision_masks": torch.bool,
-    "codes": torch.long,
-    "code_masks": torch.bool,
-    "rollout_decision_logprobs": torch.float32,
-    "rollout_code_logprobs": torch.float32,
-    "teacher_decision_logprobs": torch.float32,
-    "teacher_code_logprobs": torch.float32,
-    "student_prefill_decision_logprobs": torch.float32,
-    "student_prefill_code_logprobs": torch.float32,
-}
 
-
-def _cpu_tensor(value, dtype: torch.dtype) -> torch.Tensor:
-    return torch.as_tensor(value, dtype=dtype).detach().cpu().contiguous()
-
-
-def _tensorize_moss_rollout_data(rollout_data: RolloutBatch) -> None:
-    for key, dtype in _TENSOR_DTYPES.items():
-        if key in rollout_data:
-            rollout_data[key] = [_cpu_tensor(value, dtype) for value in rollout_data[key]]
-            if key in {"teacher_code_logprobs", "student_prefill_code_logprobs"}:
-                rollout_data[key] = [value.reshape(-1, 12) for value in rollout_data[key]]
-    for key in ("rollout_event_mask_sums",):
-        if key in rollout_data:
-            rollout_data[key] = _cpu_tensor(rollout_data[key], torch.float32)
+def _validated_trajectories(samples: list[Sample]) -> list[MossTTSLocalTrajectoryV2]:
+    trajectories: list[MossTTSLocalTrajectoryV2] = []
+    for sample_index, sample in enumerate(samples):
+        trajectory = sample.structured_trajectory
+        if not isinstance(trajectory, MossTTSLocalTrajectoryV2):
+            raise TypeError(f"MOSS-TTS Local sample {sample_index} is missing a MossTTSLocalTrajectoryV2.")
+        trajectory.validate()
+        if sample.status not in (Sample.Status.COMPLETED, Sample.Status.TRUNCATED):
+            raise ValueError(f"MOSS-TTS Local sample {sample_index} has non-trainable status {sample.status.value!r}.")
+        expected_status = Sample.Status.COMPLETED if trajectory.finish_reason == "stop" else Sample.Status.TRUNCATED
+        if sample.status != expected_status:
+            raise ValueError(
+                f"MOSS-TTS Local sample {sample_index} finish/status mismatch: "
+                f"finish_reason={trajectory.finish_reason!r}, status={sample.status.value!r}."
+            )
+        trajectories.append(trajectory)
+    return trajectories
 
 
 class MossTTSLocalRolloutDataAdapter:
     """Own the structured trajectory-to-training representation."""
+
+    preserve_partition = True
+    prepare_rollout_data = staticmethod(prepare_shard)
+    validate_sample_version = staticmethod(validate_sample_version)
+
+    def split_by_dp(self, args, data, train_parallel_config):
+        return split_raw(args, data, train_parallel_config)
 
     def dispose(self) -> None:
         from miles.policies.moss_tts_local.rollout import dispose_rollout_state
@@ -64,33 +62,21 @@ class MossTTSLocalRolloutDataAdapter:
                 "--custom-convert-samples-to-train-data-path is not supported."
             )
 
-        trajectories: list[MossTTSLocalTrajectoryV2] = []
-        for sample_index, sample in enumerate(samples):
-            trajectory = sample.structured_trajectory
-            if not isinstance(trajectory, MossTTSLocalTrajectoryV2):
-                raise TypeError(f"MOSS-TTS Local sample {sample_index} is missing a MossTTSLocalTrajectoryV2.")
-            trajectory.validate()
-            if sample.status not in (Sample.Status.COMPLETED, Sample.Status.TRUNCATED):
-                raise ValueError(
-                    f"MOSS-TTS Local sample {sample_index} has non-trainable status {sample.status.value!r}."
-                )
-            expected_status = Sample.Status.COMPLETED if trajectory.finish_reason == "stop" else Sample.Status.TRUNCATED
-            if sample.status != expected_status:
-                raise ValueError(
-                    f"MOSS-TTS Local sample {sample_index} finish/status mismatch: "
-                    f"finish_reason={trajectory.finish_reason!r}, status={sample.status.value!r}."
-                )
-            trajectories.append(trajectory)
+        trajectories = _validated_trajectories(samples)
 
-        has_replay = any((sample.metadata or {}).get("moss_teacher_replay") for sample in samples)
+        provenance = [SampleProvenance.from_sample(sample) for sample in samples]
+        has_replay = any(item.origin == "teacher_replay" for item in provenance)
         if has_replay:
             if not getattr(args, "moss_local_replay_manifest", None) or getattr(
                 args, "moss_local_mopd_estimator", "sampled"
             ) not in {"dense_reverse", "dense_forward"}:
                 raise ValueError("Teacher-origin trajectories require explicitly enabled native mixed distillation")
-            training_versions = [str(sample.metadata["moss_training_policy_version"]) for sample in samples]
-        else:
-            training_versions = [str(trajectory.weight_version) for trajectory in trajectories]
+            for item in provenance:
+                if item.student_scoring_version != item.training_version:
+                    raise ValueError(
+                        "Mixed replay requires matching student scoring and behavior versions for every sample"
+                    )
+        training_versions = [item.training_version for item in provenance]
         if len(set(training_versions)) != 1:
             raise ValueError("MOSS training batches must not mix generating weight versions")
         raw_rewards, rewards = reward_postprocess(samples)
@@ -143,14 +129,10 @@ class MossTTSLocalRolloutDataAdapter:
             "source_names": [(sample.metadata or {}).get("source_name", "unknown") for sample in samples],
         }
         if getattr(args, "moss_local_replay_manifest", None):
-            train_data["trajectory_origins"] = [
-                "teacher_replay" if (sample.metadata or {}).get("moss_teacher_replay") else "student"
-                for sample in samples
-            ]
-            train_data["behavior_weight_versions"] = [trajectory.weight_version for trajectory in trajectories]
-            train_data["replay_ids"] = [
-                (sample.metadata or {}).get("moss_teacher_replay", {}).get("entry_id", "") for sample in samples
-            ]
+            train_data["trajectory_origins"] = [item.origin for item in provenance]
+            train_data["behavior_weight_versions"] = [item.behavior_version for item in provenance]
+            train_data["student_scoring_versions"] = [item.student_scoring_version for item in provenance]
+            train_data["replay_ids"] = [item.replay_id for item in provenance]
         if any(sample.metadata and "raw_reward" in sample.metadata for sample in samples):
             train_data["raw_reward"] = [
                 sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else sample.reward
@@ -195,6 +177,6 @@ def split_raw(args, data, train_parallel_config):
             num_microbatches=microbatch_counts,
             num_rollouts=rollout_counts,
         )
-        _tensorize_moss_rollout_data(shard)
+        tensorize_shard(shard)
         result.append(shard)
     return result

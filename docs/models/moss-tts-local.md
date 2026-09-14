@@ -2,6 +2,8 @@
 
 This opt-in policy trains mossLite v0.1.1 MOSS-TTS Local with Miles/Megatron and externally launched SGLang-Omni pipelines. It replays structured text decisions and 12 audio codebooks per frame; the audio actions are never represented as text tokens.
 
+The [adapter structure and compatibility contracts](../design/moss-tts-local-adapters.md) describe policy resolution, trainer snapshot ownership, structured transport and reward composition.
+
 The initial recipe is ported from the validated Slime MOSS experiment. It requires the native split-v1 model checkpoint, its converted Omni checkpoint, the audio codec, disjoint JSONL training/evaluation prompts, and an ASR chat-completions endpoint. Install Miles, Omni, SGLang and Megatron from their editable checkouts before launching.
 
 ## Training

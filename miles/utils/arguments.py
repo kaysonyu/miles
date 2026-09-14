@@ -10,6 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.policies.registry import policy_for_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -3772,7 +3773,7 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
 
 
 def hf_validate_args(args, hf_config):
-    if getattr(args, "policy_family", "text") == "moss_tts_local":
+    if not policy_for_args(args).uses_hf_config_validation:
         return
 
     def equal(x, y):

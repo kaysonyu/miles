@@ -9,12 +9,25 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import torch
+if TYPE_CHECKING:
+    import torch
 
-from miles.utils.types import RolloutBatch, Sample
+    from miles.utils.types import RolloutBatch, Sample
+
+
+class StructuredTrajectory(Protocol):
+    """The shared envelope operations; each policy retains its concrete payload."""
+
+    model_family: str
+    weight_version: str
+
+    def validate(self) -> None: ...
+
+    def to_dict(self) -> dict[str, Any]: ...
 
 
 @runtime_checkable
@@ -36,19 +49,46 @@ class RolloutDataAdapter(Protocol):
         data: RolloutBatch,
         train_parallel_config: dict[str, int],
     ) -> list[Any]:
-        """Return one transport box per data-parallel rank."""
+        """Return one raw shard per data-parallel rank; Miles owns transport."""
+
+    def prepare_rollout_data(self, data: RolloutBatch, *, device: torch.device | int) -> RolloutBatch:
+        """Validate and move policy tensors to the training device."""
+
+    def validate_sample_version(self, args: Namespace, sample: Sample) -> None:
+        """Validate the structured sample's behavior and scoring provenance."""
+
+    def dispose(self) -> None:
+        """Release policy-owned rollout resources."""
+
+    preserve_partition: bool
 
 
 @dataclass(frozen=True)
 class TrainingContext:
-    """Dependencies a policy training workflow needs from the Ray actor."""
+    """Model state and explicit trainer capabilities for one rollout."""
 
     args: Namespace
     model: Sequence[torch.nn.Module]
     optimizer: Any
     opt_param_scheduler: Any
-    weights_backuper: Any
-    actor: Any = None
+    runtime: TrainingRuntime
+    rollout_id: int
+
+
+class TrainingRuntime(Protocol):
+    """Trainer-owned lifecycle capabilities available to a policy workflow."""
+
+    backup_required: bool
+    rollout_data_postprocess: Callable | None
+
+    @property
+    def published_version(self) -> str: ...
+
+    def behavior_snapshot(self, version: str) -> AbstractContextManager: ...
+
+    def finish_rollout(self, rollout_id: int) -> None: ...
+
+    def pop_weight_metrics(self) -> dict: ...
 
 
 @runtime_checkable
@@ -56,6 +96,9 @@ class TrainingWorkflow(Protocol):
     """Own the policy-specific path from a DP-local batch to an optimizer step."""
 
     needs_tokenizer: bool
+
+    def uses_behavior_snapshots(self, args: Namespace) -> bool:
+        """Whether published versions must retain a trainer replay snapshot."""
 
     def prepare_rollout_data(self, data: RolloutBatch, *, device: torch.device | int) -> RolloutBatch:
         """Validate and move policy tensors to the training device."""
@@ -99,3 +142,6 @@ class ServingWeightAdapter(Protocol):
 
     def validate_manifest(self, names: set[str]) -> None:
         """Fail if a completed export is missing or duplicates required tensors."""
+
+    def expected_names(self, args: Namespace) -> set[str] | None:
+        """Return an exact checkpoint manifest when the artifact provides one."""

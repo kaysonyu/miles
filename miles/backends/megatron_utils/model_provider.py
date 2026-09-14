@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.policies.registry import policy_for_args
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -269,11 +270,9 @@ def get_model_provider_func(
                         kitchen_attention_backend=config.kitchen_attention_backend,
                     )
 
-        if getattr(args, "policy_family", "text") == "moss_tts_local":
-            from miles.policies.moss_tts_local.model import MossTTSLocalMegatronModel
-
-            assert role == "actor", "MOSS only supports the actor role"
-            return MossTTSLocalMegatronModel(
+        if (model_path := policy_for_args(args).model_path) is not None:
+            assert role == "actor", "Structured policies only support the actor role"
+            return load_function(model_path)(
                 config=config,
                 transformer_layer_spec=transformer_layer_spec,
                 args=args,
