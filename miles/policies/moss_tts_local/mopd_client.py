@@ -75,6 +75,10 @@ class LocalTeacherClient:
     """One rollout-owned client; never shares a student weight-update endpoint."""
 
     def __init__(self, args):
+        self.allow_teacher_replay = (
+            bool(getattr(args, "moss_local_replay_manifest", None))
+            and getattr(args, "moss_local_replay_mode", "teacher") == "teacher"
+        )
         self.routes = teacher_routes(args.moss_local_mopd_teachers)
         self.student_endpoint = args.moss_local_student_score_endpoint
         self.default_domain = args.moss_local_mopd_default_domain
@@ -111,9 +115,17 @@ class LocalTeacherClient:
             task.add_done_callback(self.flush_tasks.discard)
         result = await future
         validate_score(payload, result)
-        if str(result["student_score"]["weight_version"]) != str(sample.structured_trajectory.weight_version):
+        replay = (sample.metadata or {}).get("moss_teacher_replay")
+        scoring_version = str(result["student_score"]["weight_version"])
+        if replay:
+            if not self.allow_teacher_replay or replay["teacher_weight_sha256"] != result["teacher_weight_sha256"]:
+                raise ValueError("Teacher replay is disabled or its teacher identity changed")
+            if replay["behavior_weight_version"] != sample.structured_trajectory.weight_version:
+                raise ValueError("Teacher replay behavior provenance changed")
+        elif scoring_version != str(sample.structured_trajectory.weight_version):
             raise ValueError("Student scoring version does not match its rollout")
         sample.metadata = dict(sample.metadata or {})
+        sample.metadata["moss_training_policy_version"] = scoring_version
         sample.metadata["mopd_teacher"] = domain
         sample.metadata["mopd_scores"] = result
         sample.reward = 0.0

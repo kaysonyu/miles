@@ -210,6 +210,7 @@ class MossTTSLocalMegatronModel(MegatronModule):
         *,
         policy_batch: MossTTSLocalPolicyBatch,
         with_entropy: bool = False,
+        with_logits: bool = False,
         **_kwargs: Any,
     ) -> MossTTSLocalPolicyOutput:
         packed_seq_params = policy_batch.packed_seq_params
@@ -249,4 +250,5 @@ class MossTTSLocalMegatronModel(MegatronModule):
             local_text_lm_head=self.local_text_lm_head,
             temperature=self.temperature,
             with_entropy=with_entropy,
+            with_logits=with_logits,
         )

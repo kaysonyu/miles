@@ -21,9 +21,15 @@ from miles.policies.moss_tts_local.batch import (
     MossTTSLocalPolicyBatch,
     collate_moss_tts_local_batch,
 )
+from miles.policies.moss_tts_local import domain_distillation
 from miles.policies.moss_tts_local.async_policy import policy_lag, replay_behavior
 from miles.policies.moss_tts_local.debug import build_moss_tts_local_debug_shard
-from miles.policies.moss_tts_local.loss import frame_joint_grpo_loss
+from miles.policies.moss_tts_local.loss import FrameJointLossOutput, frame_joint_grpo_loss
+from miles.policies.moss_tts_local.dense_mopd import (
+    NativeTeacherPool,
+    get_native_teacher_pool,
+    native_action_entropies,
+)
 from miles.policies.moss_tts_local.policy import MossTTSLocalPolicyOutput
 from miles.policies.moss_tts_local.selected_logprob import join_moss_action_logprobs
 from miles.utils.timer import inverse_timer, timer
@@ -153,6 +159,8 @@ def _moss_loss_closure(
     parity_values: list[torch.Tensor] | None = None,
     teacher_scores: tuple[torch.Tensor, torch.Tensor] | None = None,
     student_scores: tuple[torch.Tensor, torch.Tensor] | None = None,
+    teacher_distributions: tuple[torch.Tensor, torch.Tensor] | None = None,
+    teacher_domains: list[str] | None = None,
 ):
     if batch.advantages is None:
         raise ValueError("MOSS-TTS Local train batch is missing advantages.")
@@ -172,12 +180,51 @@ def _moss_loss_closure(
         captured = _collect_policy_output(output, batch=batch)
         for key, values in captured.items():
             trainer_output_collector.setdefault(f"trainer_{key}", []).extend(values)
-        active_parity = (output.joint_logprobs.detach() - batch.server_joint_logprobs())[batch.decision_mask]
+        comparison_logprobs = batch.server_joint_logprobs()
+        if teacher_distributions is not None and student_scores is not None:
+            # Native KL can include teacher-origin replay: compare against the
+            # current student's supplied-action scores, not teacher behavior.
+            comparison_logprobs = join_moss_action_logprobs(
+                *student_scores,
+                decision_offsets=batch.decision_offsets,
+                frame_offsets=batch.frame_offsets,
+                code_mask=batch.code_mask,
+            )
+        active_parity = (output.joint_logprobs.detach() - comparison_logprobs)[batch.decision_mask]
         parity_values.append(
             active_parity.abs().max() if active_parity.numel() else output.joint_logprobs.detach().sum() * 0.0
         )
     mopd_advantage_abs = None
-    if getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
+    dense_kl = None
+    if teacher_distributions is not None and args.moss_local_mopd_estimator == "sampled_native":
+        from miles.policies.moss_tts_local.mopd_loss import action_mopd_loss
+
+        td, tc = teacher_distributions
+        temperature = float(args.rollout_temperature)
+        td = (td / temperature).log_softmax(-1).gather(-1, batch.decisions[:, None]).squeeze(-1)
+        tc = (tc / temperature).log_softmax(-1).gather(-1, batch.codes[..., None]).squeeze(-1)
+        loss_output, mopd_advantage_abs = action_mopd_loss(
+            output,
+            batch,
+            td,
+            tc,
+            advantage_clip=args.moss_local_mopd_advantage_clip,
+            eps_clip=float(args.eps_clip),
+            eps_clip_high=float(args.eps_clip_high),
+            ratio_source=args.moss_local_old_policy_source,
+            student_scores=(output.decision_logprobs.detach(), output.code_logprobs.detach()),
+        )
+    elif teacher_distributions is not None:
+        dense_kl = domain_distillation.action_kl(args, output, batch, *teacher_distributions, teacher_domains)
+        zero = dense_kl.detach().new_zeros(())
+        loss_output = FrameJointLossOutput(
+            loss=dense_kl,
+            pg_loss=zero,
+            clip_fraction=zero,
+            approx_kl=zero,
+            ratio_mean=zero + batch.batch_size,
+        )
+    elif getattr(args, "moss_local_objective", "wer_grpo") == "mopd":
         from miles.policies.moss_tts_local.mopd_loss import action_mopd_loss
 
         if teacher_scores is None:
@@ -228,6 +275,15 @@ def _moss_loss_closure(
     if mopd_advantage_abs is not None:
         metric_keys.append("mopd_advantage_abs")
         metric_values = torch.cat((metric_values, mopd_advantage_abs.reshape(1)))
+    if dense_kl is not None:
+        metric_keys.append("mopd_dense_kl")
+        metric_values = torch.cat((metric_values, dense_kl.detach().reshape(1)))
+    if teacher_distributions is not None:
+        entropies = native_action_entropies(
+            output, batch, *teacher_distributions, temperature=float(args.rollout_temperature)
+        )
+        metric_keys.extend(entropies)
+        metric_values = torch.cat((metric_values, torch.stack(list(entropies.values()))))
     return (
         scaled_loss,
         torch.tensor(1, device=sample_sum_loss.device),
@@ -245,6 +301,7 @@ def _make_train_forward_step(
     *,
     trainer_output_collector: dict[str, list[torch.Tensor]] | None = None,
     parity_values: list[torch.Tensor] | None = None,
+    native_teachers: NativeTeacherPool | None = None,
 ):
     def forward_step(data_iterator, model, return_schedule_plan: bool = False):
         if return_schedule_plan:
@@ -266,6 +323,8 @@ def _make_train_forward_step(
                     "student_prefill_code_logprobs",
                 ]
             )
+        if native_teachers is not None:
+            batch_keys.append("teacher_domains")
         raw_batch = data_iterator.get_next(batch_keys)
         teacher_scores = student_scores = None
         if is_mopd:
@@ -281,7 +340,14 @@ def _make_train_forward_step(
             raw_batch,
             packed_thd=bool(getattr(args, "moss_local_packed_thd", False)),
         )
-        output = model(policy_batch=batch, with_entropy=False)
+        distributions = (
+            native_teachers.score(batch, raw_batch["teacher_domains"]) if native_teachers is not None else None
+        )
+        output = (
+            model(policy_batch=batch, with_entropy=False, with_logits=True)
+            if native_teachers is not None
+            else model(policy_batch=batch, with_entropy=False)
+        )
         return output, partial(
             _moss_loss_closure,
             args,
@@ -292,6 +358,8 @@ def _make_train_forward_step(
             parity_values=parity_values,
             teacher_scores=teacher_scores,
             student_scores=student_scores,
+            teacher_distributions=distributions,
+            teacher_domains=raw_batch.get("teacher_domains"),
         )
 
     return forward_step
@@ -467,6 +535,7 @@ class MossTTSLocalTrainingWorkflow:
         if external_data is not None:
             raise ValueError("MOSS-TTS Local P0 does not accept critic/external actor data.")
         actor = context.actor
+        native_teachers = get_native_teacher_pool(context.args, actor)
         async_mode = bool(getattr(context.args, "moss_local_async", False))
         if async_mode:
             logger.info("MOSS async train start: rollout=%d timestamp=%.6f", rollout_id, time.time())
@@ -476,8 +545,10 @@ class MossTTSLocalTrainingWorkflow:
         _log_packing(context, rollout_data)
         rollout_versions = {str(version) for version in rollout_data["weight_versions"]}
         expected_version = str(actor.weight_updater.weight_version)
-        lag = 0 if context.args.debug_train_only else policy_lag(
-            rollout_versions, expected_version, allow_one_step=async_mode
+        lag = (
+            0
+            if context.args.debug_train_only
+            else policy_lag(rollout_versions, expected_version, allow_one_step=async_mode)
         )
         rollout_data["policy_lags"] = [lag] * len(rollout_data["rewards"])
 
@@ -576,6 +647,7 @@ class MossTTSLocalTrainingWorkflow:
                     _make_train_forward_step,
                     trainer_output_collector=trainer_output_collector,
                     parity_values=parity_values,
+                    native_teachers=native_teachers,
                 ),
             )
         if outcome != TrainStepOutcome.NORMAL:
@@ -617,3 +689,5 @@ class MossTTSLocalTrainingWorkflow:
             context.args,
             extra_metrics=actor.weight_updater.pop_metrics(),
         )
+        if native_teachers is not None and rollout_id == context.args.num_rollout - 1:
+            native_teachers.verify_frozen()

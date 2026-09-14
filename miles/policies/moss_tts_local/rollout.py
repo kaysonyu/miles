@@ -13,6 +13,7 @@ from typing import Any
 
 from miles.backends.sglang_omni_utils.http_adapter import SGLangOmniHttpAdapter
 from miles.policies.moss_tts_local.trace_codec import decode_moss_tts_local_trace
+from miles.policies.moss_tts_local.teacher_replay import FrozenTeacherReplay
 from miles.policies.moss_tts_local.types import MediaArtifact
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.rm_hub import async_rm, batched_async_rm
@@ -142,6 +143,7 @@ def apply_moss_tts_local_response(sample: Sample, response: dict[str, Any]) -> S
 
 class MossTTSLocalRolloutState(metaclass=SingletonMeta):
     def __init__(self, args: Namespace) -> None:
+        self.replay = FrozenTeacherReplay(args) if getattr(args, "moss_local_replay_manifest", None) else None
         key_env = getattr(args, "sglang_omni_admin_api_key_env", None)
         admin_key = os.getenv(key_env) if key_env else None
         endpoints = list(args.sglang_omni_endpoints)
@@ -206,9 +208,19 @@ async def _generate_and_reward(
     *,
     rollout_id: int,
     seed: int,
+    use_replay: bool = False,
 ) -> Sample:
-    sample = await generate_one(args, sample, rollout_id=rollout_id, seed=seed)
     state = MossTTSLocalRolloutState(args)
+    if use_replay:
+        if state.replay is None:
+            raise ValueError("Teacher replay was selected without a replay pool")
+        if state.replay.mode == "prompt_only":
+            sample = state.replay.materialize_prompt(sample, rollout_id=rollout_id, seed=seed)
+            sample = await generate_one(args, sample, rollout_id=rollout_id, seed=seed)
+        else:
+            sample = state.replay.materialize(sample, rollout_id=rollout_id, seed=seed)
+    else:
+        sample = await generate_one(args, sample, rollout_id=rollout_id, seed=seed)
     if state.teacher is not None:
         return await state.teacher.score(sample, temperature=args.rollout_temperature)
     if not args.group_rm and sample.reward is None:
@@ -218,9 +230,11 @@ async def _generate_and_reward(
 
 async def _generate_group(args: Namespace, group: list[Sample], *, rollout_id: int, group_index: int) -> list[Sample]:
     tasks = []
+    state = MossTTSLocalRolloutState(args)
+    use_replay = state.replay is not None and state.replay.select_group(rollout_id, group_index)
     for sample_index, sample in enumerate(group):
         seed = int(args.rollout_seed) + rollout_id * 1_000_003 + group_index * 10_007 + sample_index
-        tasks.append(_generate_and_reward(args, sample, rollout_id=rollout_id, seed=seed))
+        tasks.append(_generate_and_reward(args, sample, rollout_id=rollout_id, seed=seed, use_replay=use_replay))
     generated = await asyncio.gather(*tasks)
     if args.group_rm:
         rewards = await batched_async_rm(args, generated)

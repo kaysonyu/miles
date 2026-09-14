@@ -19,6 +19,8 @@ class MossTTSLocalPolicyOutput:
     joint_logprobs: torch.Tensor
     decision_entropy: torch.Tensor | None = None
     code_entropy: torch.Tensor | None = None
+    decision_logits: torch.Tensor | None = None
+    code_logits: torch.Tensor | None = None
 
 
 def replay_local_actions(
@@ -35,6 +37,7 @@ def replay_local_actions(
     local_text_lm_head: torch.nn.Linear,
     temperature: float,
     with_entropy: bool = False,
+    with_logits: bool = False,
 ) -> MossTTSLocalPolicyOutput:
     """Replay global-time decisions and depth-autoregressive codes under teacher forcing."""
 
@@ -69,6 +72,7 @@ def replay_local_actions(
 
     code_logprob_columns = []
     code_entropy_columns = []
+    code_logits_columns = []
     for depth, head in enumerate(audio_lm_heads):
         frame_hidden = []
         for sample_index in range(decision_offsets.numel() - 1):
@@ -82,6 +86,8 @@ def replay_local_actions(
             torch.cat(frame_hidden, dim=0) if frame_hidden else local_hidden.new_empty((0, local_hidden.shape[-1]))
         )
         logits = F.linear(hidden_at_depth, head.weight).float()
+        if with_logits:
+            code_logits_columns.append(logits)
         code_logprob_columns.append(selected_logprobs(logits, codes[:, depth], temperature=temperature))
         if with_entropy:
             distribution = torch.softmax(logits / float(temperature), dim=-1)
@@ -109,4 +115,6 @@ def replay_local_actions(
         joint_logprobs=joint_logprobs,
         decision_entropy=decision_entropy,
         code_entropy=code_entropy,
+        decision_logits=decision_logits if with_logits else None,
+        code_logits=torch.stack(code_logits_columns, dim=1) if with_logits else None,
     )

@@ -74,9 +74,7 @@ class MossTTSLocalRolloutDataAdapter:
                 raise ValueError(
                     f"MOSS-TTS Local sample {sample_index} has non-trainable status {sample.status.value!r}."
                 )
-            expected_status = (
-                Sample.Status.COMPLETED if trajectory.finish_reason == "stop" else Sample.Status.TRUNCATED
-            )
+            expected_status = Sample.Status.COMPLETED if trajectory.finish_reason == "stop" else Sample.Status.TRUNCATED
             if sample.status != expected_status:
                 raise ValueError(
                     f"MOSS-TTS Local sample {sample_index} finish/status mismatch: "
@@ -84,7 +82,16 @@ class MossTTSLocalRolloutDataAdapter:
                 )
             trajectories.append(trajectory)
 
-        if len({str(trajectory.weight_version) for trajectory in trajectories}) != 1:
+        has_replay = any((sample.metadata or {}).get("moss_teacher_replay") for sample in samples)
+        if has_replay:
+            if not getattr(args, "moss_local_replay_manifest", None) or getattr(
+                args, "moss_local_mopd_estimator", "sampled"
+            ) not in {"dense_reverse", "dense_forward"}:
+                raise ValueError("Teacher-origin trajectories require explicitly enabled native mixed distillation")
+            training_versions = [str(sample.metadata["moss_training_policy_version"]) for sample in samples]
+        else:
+            training_versions = [str(trajectory.weight_version) for trajectory in trajectories]
+        if len(set(training_versions)) != 1:
             raise ValueError("MOSS training batches must not mix generating weight versions")
         raw_rewards, rewards = reward_postprocess(samples)
         if len(raw_rewards) != len(samples) or len(rewards) != len(samples):
@@ -124,7 +131,10 @@ class MossTTSLocalRolloutDataAdapter:
             "action_counts": [trajectory.num_actions for trajectory in trajectories],
             "event_counts": event_mask_sums_per_sample,
             "rollout_event_mask_sums": [rollout_total_events[rollout_id] for rollout_id in rollout_ids],
-            "weight_versions": [trajectory.weight_version for trajectory in trajectories],
+            # Native mixed GKD checks freshness of the student that scored the
+            # batch. True teacher behavior versions remain on each trajectory
+            # and in the explicit provenance fields below.
+            "weight_versions": training_versions,
             "rewards": rewards,
             "raw_reward": raw_rewards,
             "truncated": [1 if trajectory.finish_reason == "length" else 0 for trajectory in trajectories],
@@ -132,6 +142,15 @@ class MossTTSLocalRolloutDataAdapter:
             "rollout_ids": rollout_ids,
             "source_names": [(sample.metadata or {}).get("source_name", "unknown") for sample in samples],
         }
+        if getattr(args, "moss_local_replay_manifest", None):
+            train_data["trajectory_origins"] = [
+                "teacher_replay" if (sample.metadata or {}).get("moss_teacher_replay") else "student"
+                for sample in samples
+            ]
+            train_data["behavior_weight_versions"] = [trajectory.weight_version for trajectory in trajectories]
+            train_data["replay_ids"] = [
+                (sample.metadata or {}).get("moss_teacher_replay", {}).get("entry_id", "") for sample in samples
+            ]
         if any(sample.metadata and "raw_reward" in sample.metadata for sample in samples):
             train_data["raw_reward"] = [
                 sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else sample.reward

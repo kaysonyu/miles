@@ -37,6 +37,25 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"])
     for sample in samples:
         if sample.structured_trajectory is not None:
             version = sample.structured_trajectory.weight_version
+            replay = (sample.metadata or {}).get("moss_teacher_replay")
+            if replay:
+                assert (
+                    getattr(args, "policy_family", None) == "moss_tts_local"
+                    and getattr(args, "moss_local_replay_manifest", None)
+                    and getattr(args, "moss_local_replay_mode", "teacher") == "teacher"
+                    and getattr(args, "moss_local_mopd_estimator", None) in {"dense_reverse", "dense_forward"}
+                    and getattr(args, "moss_local_objective", None) == "mopd"
+                    and getattr(args, "moss_local_old_policy_source", None) == "trainer_preupdate"
+                    and not getattr(args, "moss_local_async", False)
+                ), "Teacher-origin trajectories require explicitly enabled synchronous native mixed distillation"
+                scores = sample.metadata["mopd_scores"]
+                assert replay["behavior_weight_version"] == version, "Teacher replay behavior version changed"
+                assert replay["teacher_weight_sha256"] == scores["teacher_weight_sha256"], "Replay teacher changed"
+                # The frozen teacher's behavior label is not a student publish
+                # version. Check the current student's supplied-action scorer;
+                # the trainer still enforces equality with its actual version.
+                version = sample.metadata["moss_training_policy_version"]
+                assert str(version) == str(scores["student_score"]["weight_version"]), "Student scoring version changed"
             assert _NUMERIC_VERSION_PATTERN.fullmatch(str(version)), f"Unpublished MOSS weight version: {version}"
         for span in sample.all_weight_version_spans:
             assert span.version != SGLANG_DEFAULT_WEIGHT_VERSION, (

@@ -125,3 +125,30 @@ async def test_resume_rejects_changed_teacher(tmp_path):
     with pytest.raises(ValueError, match="resume changed teacher"):
         await c.score(sample(0, "en"), temperature=1.0)
     await c.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["normal_stale", "replay_ok", "replay_wrong_teacher", "replay_wrong_version", "disabled"]
+)
+async def test_replay_keeps_behavior_version_and_checks_real_teacher(tmp_path, case):
+    cfg = args(tmp_path)
+    cfg.moss_local_replay_manifest = None if case == "disabled" else "pool.json"
+    c = LocalTeacherClient(cfg)
+    await c.client.aclose()
+    c.client = httpx.AsyncClient(transport=httpx.MockTransport(responder([])))
+    x = sample(0, "en")
+    x.structured_trajectory.weight_version = "teacher-6000"
+    if case != "normal_stale":
+        x.metadata["moss_teacher_replay"] = dict(
+            teacher_weight_sha256=("b" if case == "replay_wrong_teacher" else "a") * 64,
+            behavior_weight_version="wrong" if case == "replay_wrong_version" else "teacher-6000",
+        )
+    if case == "replay_ok":
+        await c.score(x, temperature=1.0)
+        assert x.metadata["moss_training_policy_version"] == "7"
+        assert x.structured_trajectory.weight_version == "teacher-6000"
+    else:
+        with pytest.raises(ValueError):
+            await c.score(x, temperature=1.0)
+    await c.close()

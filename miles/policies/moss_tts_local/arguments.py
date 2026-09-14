@@ -1,7 +1,9 @@
 """Opt-in arguments and correctness boundaries for MOSS-TTS Local RL."""
 
 import argparse
+import math
 
+from miles.policies.moss_tts_local import domain_distillation
 from miles.policies.moss_tts_local.async_policy import validate_configuration
 from miles.policies.moss_tts_local.reward_composite import parse_components
 
@@ -46,6 +48,25 @@ def add_arguments(parser):
     group.add_argument("--moss-local-mopd-timeout", type=float, default=120.0)
     group.add_argument("--moss-local-mopd-retries", type=int, default=2)
     group.add_argument("--moss-local-mopd-advantage-clip", type=float, default=5.0)
+    group.add_argument(
+        "--moss-local-mopd-estimator",
+        choices=["sampled", "sampled_native", "dense_reverse", "dense_forward"],
+        default="sampled",
+        help="Opt-in full-vocabulary native-teacher distillation on student trajectories.",
+    )
+    group.add_argument(
+        "--moss-local-native-teachers",
+        nargs="+",
+        help="Frozen native teachers as DOMAIN=/absolute/path/to/iter_XXXXXXX.",
+    )
+    group.add_argument("--moss-local-mopd-prefix-frames", type=int, default=0)
+    group.add_argument("--moss-local-mopd-prefix-weight", type=float, default=4.0)
+    group.add_argument("--moss-local-domain-loss-config")
+    group.add_argument("--moss-local-mopd-codebook-weights", type=float, nargs=12)
+    group.add_argument("--moss-local-mopd-decision-weight", type=float, default=1.0)
+    group.add_argument("--moss-local-replay-manifest", help="Audited frozen-teacher trajectory manifest for mixed GKD.")
+    group.add_argument("--moss-local-replay-every-n-groups", type=int, default=5)
+    group.add_argument("--moss-local-replay-mode", choices=["teacher", "prompt_only"], default="teacher")
 
     return parser
 
@@ -56,6 +77,34 @@ def validate_args(args):
         raise ValueError("--max-samples-per-microbatch requires a positive value and dynamic batching")
     if args.policy_family != "moss_tts_local":
         return
+    domain_specs = domain_distillation.load_specs(getattr(args, "moss_local_domain_loss_config", None))
+    args.moss_local_domain_loss_specs = domain_specs
+    if domain_specs and getattr(args, "moss_local_mopd_estimator", "sampled") not in {"dense_reverse", "dense_forward"}:
+        raise ValueError("Per-domain loss settings require native full-distribution MOPD")
+    prefix_frames = getattr(args, "moss_local_mopd_prefix_frames", 0)
+    prefix_weight = getattr(args, "moss_local_mopd_prefix_weight", 4.0)
+    replay = getattr(args, "moss_local_replay_manifest", None)
+    books = getattr(args, "moss_local_mopd_codebook_weights", None)
+    decision_weight = getattr(args, "moss_local_mopd_decision_weight", 1.0)
+    if books is not None and (len(books) != 12 or any(not math.isfinite(v) or v <= 0 for v in books)):
+        raise ValueError("Exactly twelve positive finite RVQ weights are required")
+    if not math.isfinite(decision_weight) or decision_weight <= 0:
+        raise ValueError("Decision weight must be positive and finite")
+    if prefix_frames < 0 or not math.isfinite(prefix_weight) or prefix_weight <= 0:
+        raise ValueError("MOPD prefix settings require nonnegative frames and a positive finite weight")
+    if (prefix_frames or replay or books is not None or decision_weight != 1.0) and getattr(
+        args, "moss_local_mopd_estimator", "sampled"
+    ) not in {
+        "dense_reverse",
+        "dense_forward",
+    }:
+        raise ValueError("Prefix weighting and teacher replay require native full-distribution distillation")
+    if replay and getattr(args, "moss_local_replay_every_n_groups", 5) < 2:
+        raise ValueError("Mixed teacher replay requires at least one student group between replay groups")
+    if replay and (args.moss_local_old_policy_source != "trainer_preupdate" or args.moss_local_async):
+        raise ValueError("Mixed teacher replay supports only synchronous native KL with trainer_preupdate")
+    if getattr(args, "moss_local_mopd_estimator", "sampled") != "sampled" and args.moss_local_objective != "mopd":
+        raise ValueError("Native distillation estimators require --moss-local-objective mopd")
     parse_components(args.moss_local_reward_components)
     validate_configuration(args)
     if args.train_backend != "megatron" or args.rollout_backend != "sglang_omni":
@@ -121,6 +170,16 @@ def validate_args(args):
         from miles.policies.moss_tts_local.mopd_client import teacher_routes
 
         routes = teacher_routes(args.moss_local_mopd_teachers)
+        if getattr(args, "moss_local_mopd_estimator", "sampled") != "sampled":
+            from miles.policies.moss_tts_local.dense_mopd import native_teacher_sources
+
+            sources = native_teacher_sources(getattr(args, "moss_local_native_teachers", None))
+            if domain_specs and set(domain_specs) != set(sources):
+                raise ValueError("Domain loss settings must cover exactly the routed teachers")
+            if set(sources) != set(routes):
+                raise ValueError("Dense MOPD requires exactly one native checkpoint for every routed domain")
+            if args.moss_local_async:
+                raise ValueError("Native dense MOPD currently requires synchronous training")
         if not args.moss_local_student_score_endpoint:
             raise ValueError("MOPD requires --moss-local-student-score-endpoint for matched prefill scoring")
         if not routes:
